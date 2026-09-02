@@ -8,8 +8,10 @@ section reads continuously.
 The Mac app is `OmGui.app` — the same Open Movement application, rebuilt natively for macOS. The
 window title reads `Open Movement [V<version>] - <workspace folder>`, exactly as on Windows.
 
-> The screenshots in this section were taken on macOS with device **6036222**. A site's own device
-> ID will differ; everything else is what the site sees.
+> The screenshots in this section were taken on macOS in the app's demonstration mode with device
+> **6036222**. A site will see its own device ID, usually one device rather than three, its own
+> workspace path (the Documents folder by default) and its own file paths. Every control, label,
+> column and dialog is what the site sees.
 
 ---
 

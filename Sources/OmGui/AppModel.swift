@@ -63,8 +63,9 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var logText = ""
     @Published var statusText = ""
-    /// The last "Recording configured on ..." line, held in the status bar until the selection
-    /// changes so a site can read the Form 2 date/time off the window as well as the Log.
+    /// The last "Recording configured on ..." line, held in the status bar until the next device
+    /// action (Download, Cancel, Clear, Stop or Record...) so it survives the disconnect and a site
+    /// can read the Form 2 date/time off the window as well as the Log.
     @Published private(set) var recordingConfirmation: String?
     @Published private(set) var progress: Double?
 
