@@ -200,6 +200,9 @@ enum SelfTest {
             model.showLog = false
             model.persistViewFlags()
 
+            // --- Phase 3b: exports, tools and the plugin host (SelfTest+Tools.swift) -------------
+            await SelfTest.runTools(model: model, say: say, shot: shot, pause: pause)
+
             say("prompts answered: \(prompter.transcript.joined(separator: " | "))")
             say("done")
             completion()
