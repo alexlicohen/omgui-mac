@@ -1,6 +1,7 @@
 // swift-tools-version: 6.0
 // omgui-mac -- native Apple Silicon port of Axivity's OMGUI.
-// Phase 0/1: vendored libomapi, the Swift OmApi layer, and a CLI. No UI target yet.
+// Phase 0/1: vendored libomapi, the Swift OmApi layer, and a CLI.
+// Phase 2: the OmGui macOS app shell (SwiftUI + AppKit).
 
 import PackageDescription
 
@@ -12,6 +13,7 @@ let package = Package(
     products: [
         .library(name: "OmApi", targets: ["OmApi"]),
         .executable(name: "omgui-cli", targets: ["omgui-cli"]),
+        .executable(name: "OmGui", targets: ["OmGui"]),
     ],
     targets: [
         // Vendored libomapi (BSD-2, Newcastle University). See Vendor/libomapi/UPSTREAM.md
@@ -43,9 +45,26 @@ let package = Package(
             dependencies: ["OmApi"]
         ),
 
+        // The macOS app. `OmGuiCore` holds every headless view model so the flows can be tested
+        // without a window; `OmGui` is the SwiftUI/AppKit shell on top of it.
+        .target(
+            name: "OmGuiCore",
+            dependencies: ["OmApi"]
+        ),
+
+        .executableTarget(
+            name: "OmGui",
+            dependencies: ["OmApi", "OmGuiCore"]
+        ),
+
         .testTarget(
             name: "OmApiTests",
             dependencies: ["OmApi"]
+        ),
+
+        .testTarget(
+            name: "OmGuiTests",
+            dependencies: ["OmGuiCore", "OmApi"]
         ),
     ]
 )
