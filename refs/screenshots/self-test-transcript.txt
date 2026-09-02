@@ -1,39 +1,73 @@
 SELF-TEST: backend = mock
-SELF-TEST: menu: File{Choose Working Folder... | Open Working Folder | Recent Folders() | - | Export Resampled WAV... | Export Resampled CSV... | Export Raw CSV... | - | Exit}  Edit{Cut | Copy | Paste | - | Select All}  View{Toolbar | Status Bar | Preview | Device Properties | File Properties | Log}  Tools{Calculate SVM... | Calculate Cut Points... | Calculate Wear Time... | Calculate Sleep Time... | - | Plugins... | - | Options...}  Help{About...}
+SELF-TEST: menu: View{}  Window{- | Open Movement [V1.0.0] - /var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace}  Help{}
 SELF-TEST: defaults: workspace /var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace, mock root /var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/mock
-SELF-TEST: devices: 01234 [Devices] battery=- recording=Stopped (with data) | 05678 [Outbox] battery=- recording=Stopped | 09999 [Outbox] battery=- recording=Stopped
-SELF-TEST: splits: H[538]=538/collapsed H[538]=218/319 V[1056]=747/308 H[319]=89/229 V[1056]=738/317
+SELF-TEST: devices: 6036222 [Outbox] battery=- recording=Stopped | 6036223 [Devices] battery=- recording=Stopped (with data) | 6036224 [Outbox] battery=- recording=Stopped
+SELF-TEST: splits: H[537]=537/collapsed H[537]=218/318 V[1056]=747/308 H[318]=89/228 V[1056]=738/317
+SELF-TEST: captured 01-main-window.png
+SELF-TEST: title: Open Movement [V1.0.0] - /var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace
+SELF-TEST: CHECK ok: the window title is "Open Movement [V<version>] - <workspace>"
+SELF-TEST: CHECK ok: the title carries a version and an absolute workspace path
+SELF-TEST: device table: [Default] 6036222 6036223 6036224
+SELF-TEST: CHECK ok: the device list has one group header and it reads "Default"
+SELF-TEST: CHECK ok: no other group header is drawn
+SELF-TEST: device IDs: 6036222, 6036223, 6036224
+SELF-TEST: CHECK ok: the MOP's device 6036222 is listed with all seven digits
+SELF-TEST: Device column: 84 pt wide, widest cell needs 72 pt
+SELF-TEST: CHECK ok: the Device column is wide enough for a 7-digit ID
+SELF-TEST: toolbar icons: Download=square.and.arrow.down Cancel=xmark.circle Clear=eraser.fill Record...=circle.fill Stop=stop.fill Identify=lightbulb.fill Export=square.and.arrow.up SVM...=function Cut Points...=person.fill Wear Time...=clock.fill Sleep Analysis...=moon.zzz.fill Plugins...=puzzlepiece.extension.fill
+SELF-TEST: CHECK ok: every toolbar icon resolves (missing: )
+SELF-TEST: CHECK ok: Clear has the eraser icon the MOP names
+SELF-TEST: captured sop-01-main-window.png
+SELF-TEST: MOP device row: 6036222 | 0 | 93% |  | Stopped
+SELF-TEST: CHECK ok: the MOP device reads "Stopped"
+SELF-TEST: CHECK ok: Record is live for a cleared device
+SELF-TEST: captured sop-02-device-selected.png
+SELF-TEST: device with data: 6036223 recording=Stopped (with data) record=false download=true clear=true
+SELF-TEST: CHECK ok: a device holding a recording reads "Stopped (with data)"
+SELF-TEST: CHECK ok: Record is greyed out for a device that has data
+SELF-TEST: CHECK ok: Download and Clear are live for a device that has data
+SELF-TEST: captured sop-03-record-greyed.png
+SELF-TEST: initial profile: freq=100 range=16 gyro=(disabled) immediately=true
+SELF-TEST: CHECK ok: a fresh workspace opens at 100 Hz, +-16 g, gyro disabled, Immediately on Disconnect
+SELF-TEST: CHECK ok: the MOP device is an AX6, so the Gyro combo is shown
+SELF-TEST: warnings: WARNINGS / • A gyro-enabled device is being configured for accelerometer data only (no gyro data). / 
+SELF-TEST: CHECK ok: the gyro-disabled warning is shown verbatim
+SELF-TEST: captured sop-04-recording-settings.png
+SELF-TEST: captured sop-05-record-confirmed.png
+SELF-TEST: status bar: Recording configured on 6036222: session 1042, 2026-09-02 19:17:31
+SELF-TEST: CHECK ok: the Log pane carries "Recording configured on <id>: session <n>, <date time>"
+SELF-TEST: CHECK ok: the status bar carries the same line
 SELF-TEST: captured 01-main-window.png
 SELF-TEST: select all -> toolbar download=false clear=false record=false stop=false identify=true
 SELF-TEST: captured 02-all-selected.png
 SELF-TEST: identify: LED indices now [1, 1, 1]
 SELF-TEST: captured 03-identify.png
 SELF-TEST: one device with data selected -> toolbar download=true cancel=false clear=true record=false stop=false
-SELF-TEST: download 01234 into /var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace, then cancel it
+SELF-TEST: download 6036223 into /var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace, then cancel it
 SELF-TEST: cancel: Download column reached 'Cancelled' = true
 SELF-TEST: download completed
-SELF-TEST: prompt confirm [Overwrite File?] File already exists:      /var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace/01234_0000000001.cwa  Overwrite existing file? -> OK
+SELF-TEST: prompt confirm [Overwrite File?] File already exists:      /var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace/6036223_0000000001.cwa  Overwrite existing file? -> OK
 SELF-TEST: re-download over the existing file completed
-SELF-TEST: workspace data files: 01234_0000000001.cwa 0.01 MB 02/09/26 18:11:52
+SELF-TEST: workspace data files: 6036223_0000000001.cwa 0.01 MB 02/09/26 19:17:37
 SELF-TEST: captured 04-downloaded.png
-SELF-TEST: file properties: Device ID=01234 Session ID=0000000001 Sampling Rate=100 Sampling Range=8 Time Start=2026-09-02 18:11:24 Time End=2026-09-02 18:11:43
+SELF-TEST: file properties: Device ID=6036223 Session ID=0000000001 Sampling Rate=100 Sampling Range=16 Time Start=2026-09-02 19:17:03 Time End=2026-09-02 19:17:22
 SELF-TEST: captured 05-file-properties.png
-SELF-TEST: record dialog for 09999: gyro=false rateRange='' ok=true
-SELF-TEST: warnings: WARNINGS / • Selected device(s) not fully charged / 
+SELF-TEST: record dialog for 6036222: gyro=true rateRange='non-standard' ok=true
+SELF-TEST: warnings: WARNINGS / • A gyro-enabled device is being configured for accelerometer data only (no gyro data). / 
 SELF-TEST: captured 06-recording-settings.png
 SELF-TEST: after record: session=4321 recording=Always
 SELF-TEST: recordSetup.xml written: true
 SELF-TEST: captured 07-after-record.png
 SELF-TEST: recording device selected -> toolbar stop=true record=true
-SELF-TEST: after stop: 09999 recording=Stopped
+SELF-TEST: after stop: 6036222 recording=Stopped
 SELF-TEST: clear (full wipe) 3 device(s)
-SELF-TEST: prompt confirm [OmGui - /var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace] Wipe 3 device(s)? -> OK
-SELF-TEST: after clear: 01234 session=0 recording=Stopped group=Charging | 09999 session=0 recording=Stopped group=Charging | 05678 session=0 recording=Stopped group=Standby
+SELF-TEST: prompt confirm [Open Movement [V1.0.0] - /var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace] Wipe 3 device(s)? -> OK
+SELF-TEST: after clear: 6036222 session=0 recording=Stopped group=Charging | 6036223 session=0 recording=Stopped group=Charging | 6036224 session=0 recording=Stopped group=Charging
 SELF-TEST: captured 08-after-clear.png
 SELF-TEST: captured 09-plugin-queue.png
-SELF-TEST: output files: 0
+SELF-TEST: output files: 1
 SELF-TEST: captured 10-output-files.png
-SELF-TEST: splits with the log open: H[538]=417/120 H[417]=218/198 V[1056]=747/308 H[198]=40/157 V[1056]=738/317
+SELF-TEST: splits with the log open: H[537]=416/120 H[416]=218/197 V[1056]=747/308 H[197]=40/156 V[1056]=738/317
 SELF-TEST: captured 11-log-pane.png
 SELF-TEST: synthetic preview: viewer-preview.cwa 26.2 MB, 48.0 h, written in 0.11 s
 SELF-TEST: opened viewer-preview.cwa: 53625 blocks, 48.0 h, base bucket 1 s, levels 1/10/60/600/3600, 15856 KB of buckets
@@ -54,9 +88,9 @@ SELF-TEST: selection binding: 2026-08-31 08:24:00.000 .. 2026-08-31 20:24:00.000
 SELF-TEST: captured 14-viewer-selection.png
 SELF-TEST: after dragging the end marker: 1152.0 min
 SELF-TEST: right-click in Selection mode cleared the selection: true
-SELF-TEST: redraw (mean/worst of 20, plot 959x40 pt): full extent 4.6/12.1 ms recompose, 0.31/0.82 ms cached; 1 hour 3.9/10.4 ms recompose, 0.32/0.88 ms cached; 1 minute 4.1/10.9 ms recompose, 0.33/0.75 ms cached -- 60 fps is 16.7 ms
-SELF-TEST: redraw with the preview pane dragged to 959x460 pt: 3.2 ms worst
-SELF-TEST: device 01234: 0.9 MB of data at /var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/mock/AX317_01234/CWA-DATA.CWA
+SELF-TEST: redraw (mean/worst of 20, plot 959x40 pt): full extent 3.4/3.7 ms recompose, 0.24/0.28 ms cached; 1 hour 2.7/3.0 ms recompose, 0.23/0.26 ms cached; 1 minute 2.9/3.3 ms recompose, 0.24/0.29 ms cached -- 60 fps is 16.7 ms
+SELF-TEST: redraw with the preview pane dragged to 959x460 pt: 3.4 ms worst
+SELF-TEST: device 6036222: 0.9 MB of data at /var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/mock/AX617_6036222/CWA-DATA.CWA
 SELF-TEST: device preview: 1875 blocks, 2.0 h, opened the device's own file
 SELF-TEST: captured 14-viewer-device.png
 SELF-TEST: download overlay at 37% captured=true (a self-test hook: AppModel closes the preview when a download starts)
@@ -64,34 +98,37 @@ SELF-TEST: captured 12-options.png
 SELF-TEST: captured 13-about.png
 SELF-TEST: helper omconvert: /Users/alex/projects/omgui-mac/build/helpers/omconvert
 SELF-TEST: helper cwa-convert: /Users/alex/projects/omgui-mac/build/helpers/cwa-convert
-SELF-TEST: selected 01234_0000000000.cwa -> Data Files toolbar enabled = true
-SELF-TEST: Export raw data: source=01234_0000000000.cwa output=01234_0000000000.csv stream=-s:accel values=-v:float time=-t:timestamp
-SELF-TEST: command: "/private/var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace/01234_0000000000.cwa" -f:csv -out "/var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace/01234_0000000000.csv" -s:accel -v:float -t:timestamp
+SELF-TEST: selected 6036222_0000000000.cwa -> Data Files toolbar enabled = true
+SELF-TEST: captured sop-06-data-files.png
+SELF-TEST: Export raw data: source=6036222_0000000000.cwa output=6036222_0000000000.csv stream=-s:accel values=-v:float time=-t:timestamp
+SELF-TEST: command: "/private/var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace/6036222_0000000000.cwa" -f:csv -out "/var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace/6036222_0000000000.csv" -s:accel -v:float -t:timestamp
 SELF-TEST: captured 15-export-raw-csv.png
-SELF-TEST: prompt warn [Complete] Output 1/1:  01234_0000000000.csv  
-SELF-TEST: after Export Raw CSV: queue = Export raw data/01234_0000000000.cwa=Complete
-SELF-TEST: after Export Raw CSV: output files = 01234_0000000000.csv, recordSetup.xml
+SELF-TEST: captured sop-07-export-raw-csv.png
+SELF-TEST: prompt warn [Complete] Output 1/1:  6036222_0000000000.csv  
+SELF-TEST: after Export Raw CSV: queue = Export raw data/6036222_0000000000.cwa=Complete
+SELF-TEST: after Export Raw CSV: output files = 6036222_0000000000.csv, recordSetup.xml
 SELF-TEST: Raw CSV appeared in Output Files: true
 SELF-TEST: captured 15-export-output.png
+SELF-TEST: captured sop-08-output-files.png
 SELF-TEST: SVM dialog: epoch=1 filter=1 mode=0
-SELF-TEST: command: "/private/var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace/01234_0000000000.wav" -svm-epoch 1 -svm-filter 1 -svm-mode 0 -svm-file "/private/var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace/01234_0000000000.svm.csv.part"
+SELF-TEST: command: "/private/var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace/6036222_0000000000.wav" -svm-epoch 1 -svm-filter 1 -svm-mode 0 -svm-file "/private/var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace/6036222_0000000000.svm.csv.part"
 SELF-TEST: captured 15-export-svm.png
-SELF-TEST: prompt warn [Complete] Output 1/1:  01234_0000000000.svm.csv  
-SELF-TEST: after Calculate SVM: queue = Export raw data/01234_0000000000.cwa=Complete, SVM/01234_0000000000.cwa=Complete
-SELF-TEST: after Calculate SVM: output files = 01234_0000000000.csv, 01234_0000000000.svm.csv, 01234_0000000000.wav, recordSetup.xml
+SELF-TEST: prompt warn [Complete] Output 1/1:  6036222_0000000000.svm.csv  
+SELF-TEST: after Calculate SVM: queue = Export raw data/6036222_0000000000.cwa=Complete, SVM/6036222_0000000000.cwa=Complete
+SELF-TEST: after Calculate SVM: output files = 6036222_0000000000.csv, 6036222_0000000000.svm.csv, 6036222_0000000000.wav, recordSetup.xml
 SELF-TEST: SVM appeared in Output Files: true
 SELF-TEST: plugins: OMConvert [run-omconvert.sh]
 SELF-TEST: captured 16-plugins-list.png
-SELF-TEST: plugin form: file:///Users/alex/projects/omgui-mac/Resources/Plugins/OmConvertPlugin/AX_OMConvert.html?&input1=/private/var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace/01234_0000000000.cwa
+SELF-TEST: plugin form: file:///Users/alex/projects/omgui-mac/Resources/Plugins/OmConvertPlugin/AX_OMConvert.html?&input1=/private/var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace/6036222_0000000000.cwa
 SELF-TEST: captured 16-plugins-form.png
 SELF-TEST: the plugin page builds the documented hash: true
-SELF-TEST: prompt warn [Complete] Output 1/1:  01234_0000000000.cwa  
-SELF-TEST: after OMConvert plugin: queue = Export raw data/01234_0000000000.cwa=Complete, SVM/01234_0000000000.cwa=Complete, OMConvert//private/var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace/01234_0000000000.cwa=Complete
-SELF-TEST: after OMConvert plugin: output files = 01234_0000000000.csv, 01234_0000000000.paee.csv, 01234_0000000000.svm.csv, 01234_0000000000.wav, 01234_0000000000.wtv.csv, recordSetup.xml
+SELF-TEST: prompt warn [Complete] Output 1/1:  6036222_0000000000.cwa  
+SELF-TEST: after OMConvert plugin: queue = Export raw data/6036222_0000000000.cwa=Complete, SVM/6036222_0000000000.cwa=Complete, OMConvert//private/var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace/6036222_0000000000.cwa=Complete
+SELF-TEST: after OMConvert plugin: output files = 6036222_0000000000.csv, 6036222_0000000000.paee.csv, 6036222_0000000000.svm.csv, 6036222_0000000000.wav, 6036222_0000000000.wtv.csv, recordSetup.xml
 SELF-TEST: the OMConvert plugin wrote its .wav, .wtv.csv and .paee.csv: true
 SELF-TEST: every queued job completed: true
 SELF-TEST: captured 16-plugins-output.png
 SELF-TEST: captured 16-plugins-queue.png
 SELF-TEST: plugin queue after Clear Completed: 0 row(s)
-SELF-TEST: prompts answered: confirm[Overwrite File?] File already exists:      /var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace/01234_0000000001.cwa  Overwrite existing file? -> OK | confirm[OmGui - /var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace] Wipe 3 device(s)? -> OK | warn[Complete] Output 1/1:  01234_0000000000.csv   | warn[Complete] Output 1/1:  01234_0000000000.svm.csv   | warn[Complete] Output 1/1:  01234_0000000000.cwa  
+SELF-TEST: prompts answered: confirm[Overwrite File?] File already exists:      /var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace/6036223_0000000001.cwa  Overwrite existing file? -> OK | confirm[Open Movement [V1.0.0] - /var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace] Wipe 3 device(s)? -> OK | warn[Complete] Output 1/1:  6036222_0000000000.csv   | warn[Complete] Output 1/1:  6036222_0000000000.svm.csv   | warn[Complete] Output 1/1:  6036222_0000000000.cwa  
 SELF-TEST: done

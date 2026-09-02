@@ -38,6 +38,17 @@ extension SelfTest {
         model.pluginQueue.removeAll()
         say("selected \(file.name) -> Data Files toolbar enabled = \(model.fileToolbarEnabled)")
 
+        // MOP §9.4.4 step 2: the downloaded file, selected in Data Files. Captured here rather
+        // than in the download leg so steps 2, 3 and 4 of the SOP are all the same device's file.
+        let hadFileProperties = model.showFileProperties
+        let hadPreviewPane = model.showPreview
+        model.showFileProperties = false
+        model.showPreview = false
+        await pause(0.3)
+        await shot("sop-06-data-files.png")
+        model.showFileProperties = hadFileProperties
+        model.showPreview = hadPreviewPane
+
         @MainActor func settle(_ what: String) async {
             for _ in 0..<600 where model.jobs.isBusy { await pause(0.1) }
             model.refreshFiles()
@@ -71,12 +82,26 @@ extension SelfTest {
             + " time=\(rawCsv.rawCsv.timestamp.flag)")
         say("command: " + OmConvertJob.rawCsv(rawCsv.rawCsv).commandLine)
         await shot("15-export-raw-csv.png")
+        // MOP §9.4.4 step 3.
+        await shot("sop-07-export-raw-csv.png")
         rawCsv.onRun?(rawCsv)
         model.exportSheet = nil
         model.pendingRawCsv.removeAll()
         await settle("after Export Raw CSV")
         expect(hasOutput(".csv"), "Raw CSV appeared in Output Files")
         await shot("15-export-output.png")
+        // MOP §9.4.4 step 4: the exported file, ready to be renamed and uploaded. Nothing is
+        // selected and the preview is folded away (View ▸ Preview), so the shot is of the Output
+        // Files list rather than of the plot the viewer leg left behind.
+        model.selectedDeviceIds = []
+        model.selectedFilePaths = []
+        model.fileSelectionChanged()
+        let hadPreview = model.showPreview
+        model.showPreview = false
+        model.filesTab = 2
+        await shot("sop-08-output-files.png")
+        model.filesTab = 0
+        model.showPreview = hadPreview
 
         // --- A tool: SVM, which resamples to .wav first and then runs the analysis -------------
         model.filesTab = 0

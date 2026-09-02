@@ -39,6 +39,14 @@ enum SelfTest {
                 else { say("WARNING: could not capture \(name)") }
             }
 
+            // The run's own assertions: anything false here fails the process, so the
+            // transcript cannot claim a match the window does not show.
+            var failures: [String] = []
+            @MainActor func expect(_ condition: Bool, _ what: String) {
+                say("CHECK \(condition ? "ok" : "FAILED"): \(what)")
+                if !condition { failures.append(what) }
+            }
+
             say("backend = \(model.api.backend.name)")
             say("menu: " + menuOutline())
 
@@ -46,6 +54,10 @@ enum SelfTest {
             // `OmGui --mock --self-test` never writes into whatever workspace was last used.
             if model.options.selfTestUsedDefaults {
                 let scratch = folder.appendingPathComponent("workspace", isDirectory: true)
+                // A fresh workspace every run, for the same reason the mock volumes are reset: a
+                // previous run's `recordSetup.xml` would hide the "no profile yet" path the MOP's
+                // initial recording profile depends on.
+                try? FileManager.default.removeItem(at: scratch)
                 try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
                 model.setWorkingFolder(scratch.path, remember: false)
                 let mockRoot = (model.api.backend as? MockBackend)?.root.path ?? "(not the mock)"
@@ -62,6 +74,12 @@ enum SelfTest {
             model.rebuildRows()
             await pause(0.3)
             say("splits: " + splitOutline())
+            await shot("01-main-window.png")
+
+            // --- refs/08: the MOP alignment checks and the SOP screenshots --------------------
+            SelfTest.checkMopAlignment(model: model, say: say, expect: expect)
+            await SelfTest.captureSopImages(model: model, say: say, shot: shot, pause: pause,
+                                            expect: expect)
             await shot("01-main-window.png")
 
             // --- Selection drives the toolbar -----------------------------------------------
@@ -220,6 +238,11 @@ enum SelfTest {
             await SelfTest.runTools(model: model, say: say, shot: shot, pause: pause)
 
             say("prompts answered: \(prompter.transcript.joined(separator: " | "))")
+            guard failures.isEmpty else {
+                say("FAILED: " + failures.joined(separator: "; "))
+                model.shutdown()
+                exit(1)
+            }
             say("done")
             completion()
         }
