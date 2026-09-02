@@ -137,6 +137,23 @@ public struct RecordingSettings: Sendable, Equatable {
         rangeIndex = 2
     }
 
+    /// The ARIA MOP's starting point, applied only when the workspace has no `recordSetup.xml`
+    /// yet: 100 Hz, ±16 g, gyro disabled, "Immediately on Disconnect" (MOP §9.4.2 step 4.2/4.3).
+    ///
+    /// A deliberate deviation from OMGUI, whose range default is ±8 g: it means a site only has to
+    /// type the Recording Session ID. It is a *seed*, not a lock — the first OK writes
+    /// `recordSetup.xml`, after which the stored profile wins, and the "Defaults" button still
+    /// restores OMGUI's own 100 Hz / ±8 g.
+    public static let initialFrequencyIndex = 5
+    public static let initialRangeIndex = 3
+
+    public mutating func applyInitialProfile() {
+        frequencyIndex = RecordingSettings.initialFrequencyIndex
+        rangeIndex = RecordingSettings.initialRangeIndex
+        gyroIndex = 0
+        immediately = true
+    }
+
     /// The tail of the constructor, run after any stored profile has been applied:
     /// nudge a zero-delay start up to the current time of day, then set the end from the duration.
     public mutating func finishInitialisation(now: Date = Date(), calendar: Calendar = .autoupdatingCurrent) {

@@ -182,3 +182,19 @@ public extension SourceCategory {
 
     var displayIndex: Int { SourceCategory.displayOrder.firstIndex(of: self) ?? 0 }
 }
+
+/// The device list's group header.
+///
+/// `DeviceListView()` registers all nine category groups ("Devices", "New Data", ... "Files"), but
+/// `MainForm` never assigns one: `DeviceListViewItemUpdate` and `DeviceListViewCreateItem` both
+/// carry the assignment commented out ("TS - Don't need this anymore because there aren't groups in
+/// one list view but a list view each", `MainForm.cs:367`/`:397`). Every item therefore lands in
+/// the `ListView`'s implicit default group, which is what the MOP's V1.0.0.45 screenshot shows:
+/// one header reading "Default" with the connected devices under it. The nine registered groups
+/// stay empty for the life of the process, so the port renders exactly one section.
+public enum DeviceGroup {
+    /// The header text a WinForms `ListView` gives its default group.
+    public static let defaultTitle = "Default"
+    /// The section id (the group's key, not its header text).
+    public static let defaultIdentifier = "default"
+}

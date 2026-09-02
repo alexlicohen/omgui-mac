@@ -96,17 +96,25 @@ public struct LaunchOptions: Sendable {
             .appendingPathComponent("mock", isDirectory: true).path
 
     /// The backend this launch asks for.
+    ///
+    /// The mock is always built with `MockDeviceCatalog.specs` (the MOP's 7-digit device IDs), not
+    /// with `MockBackend.Spec.defaults`, so `--mock` screenshots read like the MOP's.
     public func makeBackend() -> DeviceBackend {
         if useMock, selfTestUsedDefaults {
             // A bare `--self-test` gets a fresh set of mock devices every run: the state a previous
             // run persisted would leave them cleared, and the Download leg would find no data.
             return MockBackend(root: URL(fileURLWithPath: mockRoot ?? LaunchOptions.defaultSelfTestMockRoot,
                                          isDirectory: true),
+                               specs: MockDeviceCatalog.specs,
                                resetVolumes: true,
                                persistState: false)
         }
+        if useMock {
+            let root = (mockRoot ?? ProcessInfo.processInfo.environment[OmApi.mockRootEnvironmentKey])
+                .map { URL(fileURLWithPath: $0, isDirectory: true) }
+            return MockBackend(root: root, specs: MockDeviceCatalog.specs)
+        }
         var environment: [String: String] = [:]
-        if useMock { environment[OmApi.mockEnvironmentKey] = "1" }
         if let mockRoot { environment[OmApi.mockRootEnvironmentKey] = mockRoot }
         return OmApi.defaultBackend(environment: environment)
     }

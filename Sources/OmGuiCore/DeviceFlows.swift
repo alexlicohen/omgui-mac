@@ -310,6 +310,23 @@ public enum RecordFlow {
         public var failures: [Failure] = []
         /// One `AX3-CONFIG-OK` / `AX3-CONFIG-ERROR` line per device.
         public var logLines: [String] = []
+        /// The devices the configuration reached without error, in the order they were written.
+        public var configured: [UInt32] = []
+    }
+
+    /// The confirmation a site copies into Lasso Form 2 ("Date recording initiated in OMGUI",
+    /// ARIA MOP §9.4.2 step 4.4).
+    ///
+    /// Not an upstream string: OMGUI logs only the `AX3-CONFIG-OK` CSV row, which is not something
+    /// a site can read off the screen. This line goes to the Log pane and the status bar.
+    public static let confirmationDateFormat = "yyyy-MM-dd HH:mm:ss"
+
+    public static func confirmationLine(deviceId: UInt32, sessionId: UInt32, at date: Date) -> String {
+        let stamp = DateFormatter()
+        stamp.locale = Locale(identifier: "en_US_POSIX")
+        stamp.dateFormat = confirmationDateFormat
+        return "Recording configured on \(FilenameTemplate.deviceIdString(deviceId)): "
+            + "session \(sessionId), \(stamp.string(from: date))"
     }
 
     /// `DATAMODE=20` is what OMGUI writes to `SETTINGS.INI` for unpacked data on an AX3.
@@ -406,6 +423,8 @@ public enum RecordFlow {
 
             if let deviceError {
                 result.failures.append(Failure(id: String(device.deviceId), error: deviceError))
+            } else {
+                result.configured.append(device.deviceId)
             }
             result.logLines.append(configLogLine(at: now(), ok: deviceError == nil,
                                                  deviceId: device.deviceId, settings: settings))
