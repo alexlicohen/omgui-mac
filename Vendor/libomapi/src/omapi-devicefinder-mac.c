@@ -69,6 +69,9 @@
 #include <IOKit/serial/IOSerialKeys.h>
 #include <IOKit/serial/ioss.h>
 
+#include <ctype.h>
+#include <sys/stat.h>
+
 
 #include "omapi-internal.h"
 
@@ -91,130 +94,135 @@ static IONotificationPortRef gNotifyPort;
 static io_iterator_t gAddedIter;
 static CFRunLoopRef gRunLoop;
 
-// Get the OS version (AA.BB.CC) as a single number (digits AABBCC)
-static unsigned int osVersion()
+// PATCH (omgui-mac): cfStringRefToCString() removed -- its only caller was the rewritten findMount().
+
+
+// Does this mounted volume hold an AX3/AX6 data file?
+static int volumeHasDataFile(const char *volumePath)
 {
-	int name[] = { CTL_KERN, KERN_OSRELEASE };
-	char versionString[64];
-	size_t versionStringLen = sizeof(versionString) - 1;
-	if (sysctl(name, sizeof(name)/sizeof(name[0]), versionString, &versionStringLen, NULL, 0) != 0) return 0;
-	uint32_t major = 0, minor = 0;
-	if (sscanf(versionString, "%u.%u", &major, &minor) != 2) return 0;
-	if (minor > 99) minor = 99;
-	if (major >= 20) {	// macOS 11+
-		return ((major - 9) * 100 + minor) * 100;
-	} else if (major >= 5) {	// macOS 10.1.1+
-		return (10 * 100 + (major - 4)) * 100 + minor;
+	char dataFile[PATH_MAX];
+	struct stat st;
+	if (volumePath == NULL || volumePath[0] == '\0') { return 0; }
+	snprintf(dataFile, sizeof(dataFile), "%s/%s", volumePath, OM_DEFAULT_FILENAME);
+	return (stat(dataFile, &st) == 0) ? 1 : 0;
+}
+
+// Mount point for one BSD device node ("/dev/diskNsM"), or NULL.  Caller frees.
+static char *mountPathForBsdName(DASessionRef daSession, const char *bsdName)
+{
+	char *volumePath = NULL;
+	DADiskRef disk = DADiskCreateFromBSDName(kCFAllocatorDefault, daSession, bsdName);
+	if (disk == NULL) { return NULL; }
+	CFDictionaryRef desc = DADiskCopyDescription(disk);
+	if (desc != NULL)
+	{
+		CFURLRef url = (CFURLRef)CFDictionaryGetValue(desc, kDADiskDescriptionVolumePathKey);
+		if (url != NULL)
+		{
+			char buffer[PATH_MAX];
+			buffer[0] = '\0';
+			if (CFURLGetFileSystemRepresentation(url, true, (UInt8 *)buffer, sizeof(buffer)) && buffer[0] != '\0')
+			{
+				// Mount paths are reported with a trailing slash ("/Volumes/AX317_12345/")
+				size_t len = strlen(buffer);
+				while (len > 1 && buffer[len - 1] == '/') { buffer[--len] = '\0'; }
+				volumePath = strdup(buffer);
+			}
+		}
+		CFRelease(desc);
 	}
-	return 0;
+	CFRelease(disk);
+	return volumePath;
 }
 
-static char *cfStringRefToCString(CFStringRef cfString)
-{
-	if (!cfString) return NULL;
-	static char string[2048];
-	string[0] = '\0';
-	// CFShow(CFCopyDescription(cfString));
-	CFStringGetCString(cfString, string, MAXPATHLEN, kCFStringEncodingUTF8);
-	return &string[0];
-}
- 
-static char *cfTypeToCString(CFTypeRef cfString)
-{
-	if (!cfString) return NULL;
-	static char deviceFilePath[2048];
-	deviceFilePath[0] = '\0';
-	// CFShow( CFCopyDescription(cfString));
-	CFStringGetCString(CFCopyDescription(cfString), deviceFilePath, MAXPATHLEN, kCFStringEncodingUTF8);
-	char *p = deviceFilePath;
-	while (*p != '\"') p++; p++;
-	char *pp = p;
-	while (*pp != '\"') pp++;
-	*pp = '\0';
-	if (isdigit(*p)) *p = 'x';
-	return p;
-}
-
-// 
+// Find the mounted volume that holds this device's data file.
+//
+// PATCH (omgui-mac): upstream recovered the volume *name* by string-scanning CFCopyDescription()
+// output, assumed the mount point was always "/Volumes/<name>", and assumed the data partition
+// was always "<disk>s1".  All three are unsafe: a volume name is not a mount point (duplicates
+// get " 1" appended by the mounter and names may contain '/'), some units present a
+// "superfloppy" with no partition table so the volume *is* the whole disk, and the AX6 does not
+// use the AX317_ label the upstream comment assumed.  We now ask DiskArbitration for the real
+// mount path (kDADiskDescriptionVolumePathKey) and select the volume by the presence of
+// CWA-DATA.CWA.  The CF objects that upstream leaked here are also released.
 static const char *findMount(io_service_t usbDevice)
 {
 	char *volumePath = NULL;
-
-	// Check IOUSBDevice
-	OmLog(3, "MAC: usbDevice: %p\n", (void *)usbDevice);
-	if (!IOObjectConformsTo(usbDevice, "IOUSBDevice")) return NULL;
-
-	// Check is IOUSBDevice, or IOUSBHostDevice since El Capitan
 	io_name_t className;
+	CFStringRef bsdNameRef = NULL;
+	DASessionRef daSession;
+	char wholeDisk[64];
+	int attempt;
+
+	OmLog(3, "MAC: usbDevice: %u\n", (unsigned int)usbDevice);
+	if (!IOObjectConformsTo(usbDevice, "IOUSBDevice") && !IOObjectConformsTo(usbDevice, "IOUSBHostDevice")) { return NULL; }
 	IOObjectGetClass(usbDevice, className);
 	OmLog(3, "MAC: ...className: %s\n", (const char *)className);
-	if (strcmp(className, "IOUSBDevice") != 0 && strcmp(className, "IOUSBHostDevice") != 0) return NULL;
 
-	// Device name
-	io_name_t deviceName;
-	IORegistryEntryGetName(usbDevice, deviceName);
-	OmLog(3, "MAC: ...deviceName: %s\n", (const char *)deviceName);
+	daSession = DASessionCreate(kCFAllocatorDefault);
+	if (daSession == NULL) { OmLog(0, "MAC: ERROR: DASessionCreate failed.\n"); return NULL; }
 
-	// Wait for the mount point
-	CFStringRef bsdName = NULL;
-	int i;
-	for (i = 0; i < 200; i++)
+	wholeDisk[0] = '\0';
+
+	// The mass-storage interface enumerates and mounts a moment after the USB device appears.
+	for (attempt = 0; attempt < 160 && volumePath == NULL; attempt++)		// up to ~8 seconds
 	{
-		bsdName = (CFStringRef)IORegistryEntrySearchCFProperty(usbDevice, kIOServicePlane, CFSTR(kIOBSDNameKey), kCFAllocatorDefault, kIORegistryIterateRecursively);
-		if (bsdName)
+		if (om.quitDiscoveryThread) { break; }
+
+		if (bsdNameRef == NULL)
 		{
-			char bsdNameBuf[4096];
-			sprintf(bsdNameBuf, "/dev/%ss1", cfStringRefToCString(bsdName));
-			const char *bsdNameC = &(bsdNameBuf[0]);
-			OmLog(3, "MAC: ...bsd name: %s\n", bsdNameC);
-
-			DASessionRef daSession = DASessionCreate(kCFAllocatorDefault);
-			DADiskRef disk = DADiskCreateFromBSDName(kCFAllocatorDefault, daSession, bsdNameC);
-
-			// If mounted...
-			if (disk)
+			bsdNameRef = (CFStringRef)IORegistryEntrySearchCFProperty(usbDevice, kIOServicePlane, CFSTR(kIOBSDNameKey), kCFAllocatorDefault, kIORegistryIterateRecursively);
+			if (bsdNameRef != NULL)
 			{
-				int j;
-
-				// Wait for disk volumes to mount
-				for (j = 0; j < 200; j++)
-				{
-					CFDictionaryRef desc = DADiskCopyDescription(disk);
-					// If have volume...
-					if (desc)
-					{
-						CFTypeRef str = CFDictionaryGetValue(desc, kDADiskDescriptionVolumeNameKey);
-						char *volumeName = cfTypeToCString(str);
-						if (volumeName && strlen(volumeName))
-						{
-							// mounted volume
-							volumePath = malloc(4096);
-							sprintf(volumePath, "/Volumes/%s", volumeName);
-							OmLog(3, "MAC: ...volume: %s\n", volumePath);
-
-							CFRelease(desc);
-							break;
-						}
-						else
-						{
-							CFRelease(desc);
-						}
-					}
-					// wait for mounted volume
-					//OmLog(3, ".");
-					usleep(100 * 1000);
-				}
-				CFRelease(disk);
+				char bsdName[64];
+				size_t len;
+				bsdName[0] = '\0';
+				CFStringGetCString(bsdNameRef, bsdName, sizeof(bsdName), kCFStringEncodingUTF8);
+				OmLog(3, "MAC: ...bsd name: %s\n", bsdName);
+				// Reduce a partition node "diskNsM" to the whole disk "diskN"
+				strncpy(wholeDisk, bsdName, sizeof(wholeDisk) - 1);
+				wholeDisk[sizeof(wholeDisk) - 1] = '\0';
+				len = strlen(wholeDisk);
+				while (len > 0 && isdigit((unsigned char)wholeDisk[len - 1])) { len--; }
+				if (len > 0 && wholeDisk[len - 1] == 's') { wholeDisk[len - 1] = '\0'; }
 			}
-			CFRelease(daSession);
-			break;
 		}
-		else
+
+		if (wholeDisk[0] != '\0')
 		{
-			// wait for mounted disk
-			usleep(10 * 1000);
+			// Whole disk first (superfloppy), then the first few partitions
+			char *fallback = NULL;
+			int part;
+			for (part = 0; part <= 4 && volumePath == NULL; part++)
+			{
+				char candidate[96];
+				char *mount;
+				if (part == 0) { snprintf(candidate, sizeof(candidate), "/dev/%s", wholeDisk); }
+				else { snprintf(candidate, sizeof(candidate), "/dev/%ss%d", wholeDisk, part); }
+				mount = mountPathForBsdName(daSession, candidate);
+				if (mount == NULL) { continue; }
+				OmLog(3, "MAC: ...%s is mounted at: %s\n", candidate, mount);
+				if (volumeHasDataFile(mount)) { volumePath = mount; }
+				else if (fallback == NULL) { fallback = mount; }
+				else { free(mount); }
+			}
+			// Mounted but no data file yet: keep polling, and only then accept it anyway
+			// (a device can be seen briefly between a FORMAT and the new data file appearing).
+			if (volumePath == NULL && fallback != NULL && attempt >= 60)
+			{
+				OmLog(0, "MAC: WARNING: Volume %s has no %s -- accepting it anyway.\n", fallback, OM_DEFAULT_FILENAME);
+				volumePath = fallback;
+				fallback = NULL;
+			}
+			if (fallback != NULL) { free(fallback); }
 		}
+
+		if (volumePath == NULL) { usleep(50 * 1000); }
 	}
+
+	if (bsdNameRef != NULL) { CFRelease(bsdNameRef); }
+	CFRelease(daSession);
+	if (volumePath != NULL) { OmLog(3, "MAC: ...volume: %s\n", volumePath); }
 	return volumePath;
 }
 
@@ -251,7 +259,7 @@ static unsigned int DeviceIdFromSerialNumber(const char *serialNumber)
 {
 	// Return the number found at the end of the string (0 if none)
 	bool inNumber = false;
-    unsigned int value = (unsigned int)-1;
+    unsigned int value = 0;		// PATCH (omgui-mac): was (unsigned)-1, which the caller's "<= 0" test could never catch
     const char *p;
     for (p = serialNumber; *p != 0; p++)
     {
@@ -316,7 +324,7 @@ const char *findSerial(const char *usbSerial)
 	}
 
 	io_iterator_t iter;
-	if (IOServiceGetMatchingServices(kIOMasterPortDefault, classes, &iter) != KERN_SUCCESS)
+	if (IOServiceGetMatchingServices(kIOMainPortDefault, classes, &iter) != KERN_SUCCESS)		// PATCH (omgui-mac): kIOMasterPortDefault deprecated in macOS 12
 	{
 		OmLog(2, "ERROR: IOServiceGetMatchingServices failed.\n");
 		return NULL;
@@ -353,6 +361,9 @@ const char *findSerial(const char *usbSerial)
 					serialPath = malloc(PATH_MAX);
 					strcpy(serialPath, path);
 					OmLog(3, "MAC: Found serial number %s at path: %s\n", serial, path);
+					// PATCH (omgui-mac): upstream broke out here leaking cf_property and ioport
+					CFRelease(cf_property);
+					IOObjectRelease(ioport);
 					break;
 				}
 			}
@@ -368,7 +379,6 @@ const char *findSerial(const char *usbSerial)
 // Called on kIOGeneralInterest notification, look for kIOMessageServiceIsTerminated (IOMessage.h)
 static void DeviceNotification(void *refCon, io_service_t service, natural_t messageType, void *messageArgument)
 {
-	kern_return_t kr;
 	DeviceData *deviceData = (DeviceData *)refCon;
 	if (messageType == kIOMessageServiceIsTerminated)
 	{		
@@ -383,9 +393,9 @@ static void DeviceNotification(void *refCon, io_service_t service, natural_t mes
 		CFRelease(deviceData->deviceName);
 		if (deviceData->deviceInterface)
 		{
-			kr = (*deviceData->deviceInterface)->Release(deviceData->deviceInterface);
+			(*deviceData->deviceInterface)->Release(deviceData->deviceInterface);
 		}
-		kr = IOObjectRelease(deviceData->notification);
+		IOObjectRelease(deviceData->notification);
 		free(deviceData);
 	}
 }
@@ -488,7 +498,7 @@ static void DeviceAdded(void *refCon, io_iterator_t iterator)
 			OmLog(3, "->serialNumber: %s\n", deviceData->serialNumber);
 
 			deviceData->deviceId = DeviceIdFromSerialNumber(deviceData->serialNumber);
-			if (deviceData->deviceId <= 0)
+			if (deviceData->deviceId == 0)
 			{
 				OmLog(2, "MAC: ERROR: Couldn't find device ID from USB serial number.\n");
 				break;
@@ -529,16 +539,6 @@ static void DeviceAdded(void *refCon, io_iterator_t iterator)
 	}
 }
 
-// Handle program interrupt (e.g. Ctrl-C)
-void SignalHandler(int sigraised)
-{
-	OmLog(2, "DEVICE: Interrupted.\n");
-	fprintf(stderr, "DEVICE: Interrupted.\n");
-	
-	// TODO: Move this to a handler in the library
-	exit(0);
-}
-
 
 static volatile int gStarted = 0;
 static pthread_mutex_t gStartMutex;
@@ -546,22 +546,16 @@ static pthread_cond_t gStartCond;
 
 static thread_return_t OmDeviceDiscoveryThread(void *arg)
 {
-	// Set signal handler
-	{
-		sig_t oldHandler = signal(SIGINT, SignalHandler);
-		if (oldHandler == SIG_ERR) {
-			OmLog(2, "WARNING: Could not set signal handler.\n");
-			fprintf(stderr, "WARNING: Could not set signal handler.\n");
-		}
-	}
-	
-	// See: https://stackoverflow.com/questions/33181669/osx-workaround-for-getting-bsd-name-of-an-iousbdevice
-	unsigned int currentVersion = osVersion();
-	unsigned int maxVersion = __MAC_OS_X_VERSION_MAX_ALLOWED;
-	unsigned int versionElCapitan = 101100; // "El Capitan" (AvailabilityInternal.h)
-	// "IOUSBDevice" -> "IOUSBHostDevice"
-	const char *serviceMatcher = (currentVersion < versionElCapitan || maxVersion < versionElCapitan) ? "IOUSBDevice" : "IOUSBHostDevice";
-	OmLog(2, "MAC: NOTE: currentVersion=%u, maxVersion=%u, elCapitan=%u, serviceMatched=%s\n", currentVersion, maxVersion, versionElCapitan, serviceMatcher);
+	// PATCH (omgui-mac): upstream installed a SIGINT handler here that called exit(0).
+	// A library must not take over the host application's Ctrl-C, and must never exit the
+	// process on its behalf, so no handler is installed.
+
+	// PATCH (omgui-mac): upstream chose "IOUSBDevice" vs "IOUSBHostDevice" from a runtime OS
+	// version computed as (darwinMajor - 9), which stopped mapping to the marketing version at
+	// macOS 26 (Darwin 25).  This build targets macOS 14+, where the class is always
+	// "IOUSBHostDevice", so the version probe (and osVersion()) has been removed.
+	const char *serviceMatcher = "IOUSBHostDevice";
+	OmLog(2, "MAC: NOTE: serviceMatcher=%s\n", serviceMatcher);
 
 	CFMutableDictionaryRef matchingDict = IOServiceMatching(serviceMatcher);		// kIOUSBDeviceClassName="IOUSBDevice"
 	if (matchingDict == NULL)
@@ -591,7 +585,7 @@ static thread_return_t OmDeviceDiscoveryThread(void *arg)
 	}
 
 	// Set up async notifications using a notification port and its run loop event source
-	gNotifyPort = IONotificationPortCreate(kIOMasterPortDefault);
+	gNotifyPort = IONotificationPortCreate(kIOMainPortDefault);		// PATCH (omgui-mac): kIOMasterPortDefault deprecated in macOS 12
 	CFRunLoopSourceRef runLoopSource = IONotificationPortGetRunLoopSource(gNotifyPort);
 	
 	gRunLoop = CFRunLoopGetCurrent();
@@ -659,8 +653,12 @@ void OmDeviceDiscoveryStop(void)
 {
     om.quitDiscoveryThread = 1;
 	OmLog(3, "DEVICE: Stopping run loop...\n");
-    CFRunLoopStop(gRunLoop);
-    pthread_cancel(om.discoveryThread);     // thread_join(&om.discoveryThread, NULL);
+	// PATCH (omgui-mac): upstream called CFRunLoopStop() then immediately pthread_cancel(), which
+	// can tear the thread down inside CoreFoundation.  findMount() now polls quitDiscoveryThread,
+	// so the thread returns on its own and we join it.
+	if (gRunLoop != NULL) { CFRunLoopStop(gRunLoop); }
+	thread_join(om.discoveryThread, NULL);
+	gRunLoop = NULL;
 }
 
 #endif  // __APPLE__

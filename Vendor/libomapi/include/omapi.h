@@ -25,6 +25,8 @@
 
 
 
+#include <stdint.h>
+
 /** @file
  *  @ingroup   API
  *  @brief     Open Movement API
@@ -335,7 +337,13 @@ OM_EXPORT int OmGetDeviceIds(int *deviceIds, int maxDevices);
 /* A single integer value is used to pack the date/time for a simpler, cross-language, API. 
  * (Defined here before its documentation, grouped with the other time functions below)
  */
-typedef unsigned long OM_DATETIME;
+// PATCH (omgui-mac): was 'unsigned long'.  That is 32-bit on Windows (where this library was
+// developed, and where the C# binding declares the same values as 'uint'), but 64-bit on
+// macOS/Linux LP64.  OM_DATETIME is a field of the tightly-packed OM_READER_HEADER_PACKET /
+// OM_READER_DATA_PACKET structs, whose own comments document it as 4 bytes; at 8 bytes every
+// field after it shifts by +4 and sizeof(OM_READER_DATA_PACKET) becomes 516 instead of 512, so
+// OmReaderGetValue() reads light/temperature/events/battery/sampleRate from the wrong offsets.
+typedef uint32_t OM_DATETIME;
 
 
 

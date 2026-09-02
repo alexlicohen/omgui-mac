@@ -428,7 +428,7 @@ static int OmPortOpen(const char *infile, char writeable)
 	int fd = -1;        // fd = fileno(stdin);
 	int flags;
 
-	if (infile == NULL && infile[0] == '\0') { return -1; }
+	if (infile == NULL || infile[0] == '\0') { return -1; }		// PATCH (omgui-mac): was '&&', which dereferenced a NULL infile
 
 	flags = O_NOCTTY | O_NDELAY;
 	flags |= (writeable) ? O_RDWR : O_RDONLY;
