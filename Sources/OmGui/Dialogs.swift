@@ -3,6 +3,25 @@ import OmApi
 import OmGuiCore
 import SwiftUI
 
+/// The title a WinForms dialog shows in its own title bar. macOS sheets have no title bar, so the
+/// port renders the dialog's `Form.Text` as a header row instead — the string is still exactly the
+/// one upstream sets.
+struct DialogTitleBar: View {
+    let title: String
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            Divider()
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
 /// `OptionsDialog` — "Options".
 struct OptionsView: View {
 
@@ -13,6 +32,18 @@ struct OptionsView: View {
     @State private var pluginFolder = ""
 
     var body: some View {
+        VStack(spacing: 0) {
+            DialogTitleBar(title: "Options")
+            optionsBody
+        }
+        .frame(width: 480)
+        .onAppear {
+            filenameTemplate = model.settings.filenameTemplate
+            pluginFolder = model.settings.pluginFolder
+        }
+    }
+
+    private var optionsBody: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
                 Text("Filename:").frame(width: 84, alignment: .leading)
@@ -41,11 +72,6 @@ struct OptionsView: View {
             }
         }
         .padding(16)
-        .frame(width: 480)
-        .onAppear {
-            filenameTemplate = model.settings.filenameTemplate
-            pluginFolder = model.settings.pluginFolder
-        }
     }
 
     private func browse() {
@@ -108,6 +134,14 @@ struct AboutView: View {
     """
 
     var body: some View {
+        VStack(spacing: 0) {
+            DialogTitleBar(title: "About \(AboutView.productName)")
+            aboutBody
+        }
+        .frame(width: 520)
+    }
+
+    private var aboutBody: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(AboutView.productName).font(.system(size: 16, weight: .semibold))
             Text(AboutView.description).font(.system(size: 12))
@@ -130,7 +164,6 @@ struct AboutView: View {
             }
         }
         .padding(16)
-        .frame(width: 520)
     }
 }
 
@@ -141,13 +174,15 @@ struct ProgressSheet: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(context.title).font(.system(size: 13, weight: .semibold))
-            Text(context.message).font(.system(size: 11)).lineLimit(2)
-            ProgressView(value: model.progress ?? 0)
-                .progressViewStyle(.linear)
+        VStack(spacing: 0) {
+            DialogTitleBar(title: context.title)
+            VStack(alignment: .leading, spacing: 10) {
+                Text(context.message).font(.system(size: 11)).lineLimit(2)
+                ProgressView(value: model.progress ?? 0)
+                    .progressViewStyle(.linear)
+            }
+            .padding(16)
         }
-        .padding(16)
         .frame(width: 360)
     }
 }

@@ -17,6 +17,15 @@ struct RecordingSettingsView: View {
     private var validation: RecordingSettings.Validation { context.settings.validate() }
 
     var body: some View {
+        VStack(spacing: 0) {
+            // `DateRangeForm(title, devices)` is constructed with the title "Recording Settings".
+            DialogTitleBar(title: "Recording Settings")
+            form
+        }
+        .frame(width: 560)
+    }
+
+    private var form: some View {
         VStack(alignment: .leading, spacing: 8) {
             sessionRow
             samplingBox
@@ -40,8 +49,6 @@ struct RecordingSettingsView: View {
             bottomBar
         }
         .padding(12)
-        .frame(width: 560)
-        .navigationTitle("Recording Settings")
     }
 
     // MARK: - Session
@@ -239,9 +246,9 @@ struct RecordingSettingsView: View {
     private func labelled(_ title: String, _ field: some View) -> some View {
         HStack(spacing: 6) {
             Text(title)
-                .frame(width: 94, alignment: .leading)
+                .frame(width: 110, alignment: .leading)
                 .font(.system(size: 11))
-            field.frame(width: 128)
+            field.frame(width: 130)
         }
     }
 

@@ -35,9 +35,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
 
+        // OMGUI's Edit menu is Cut / Copy / Paste / Select All and nothing else; macOS otherwise
+        // appends "Start Dictation…" and "Emoji & Symbols" to any menu titled "Edit".
+        UserDefaults.standard.register(defaults: [
+            "NSDisabledDictationMenuItem": true,
+            "NSDisabledCharacterPaletteMenuItem": true,
+        ])
+
         let controller = MainMenuController(model: model)
         menuController = controller
         NSApp.mainMenu = controller.buildMenu()
+        // `setMainMenu` is where AppKit injects its own Edit items.
+        controller.trimEditMenu()
 
         makeMainWindow()
         model.start()
@@ -87,6 +96,9 @@ final class MainMenuController: NSObject, NSMenuDelegate {
 
     private var viewMenu: NSMenu?
     private var recentMenu: NSMenu?
+    private var editMenu: NSMenu?
+    /// `menuStripMain`'s Edit items — everything macOS appends past these is trimmed off.
+    private static let editItemCount = 5
 
     func buildMenu() -> NSMenu {
         let main = NSMenu()
@@ -115,7 +127,7 @@ final class MainMenuController: NSObject, NSMenuDelegate {
         main.addItem(appItem)
 
         main.addItem(makeSubmenu("File", fileMenu()))
-        main.addItem(makeSubmenu("Edit", editMenu()))
+        main.addItem(makeSubmenu("Edit", makeEditMenu()))
         main.addItem(makeSubmenu("View", makeViewMenu()))
         main.addItem(makeSubmenu("Tools", toolsMenu()))
         main.addItem(makeSubmenu("Help", helpMenu()))
@@ -157,14 +169,26 @@ final class MainMenuController: NSObject, NSMenuDelegate {
         return menu
     }
 
-    private func editMenu() -> NSMenu {
+    private func makeEditMenu() -> NSMenu {
         let menu = NSMenu()
         menu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
         menu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         menu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Select All", action: #selector(selectAllDevices), keyEquivalent: "a").target = self
+        menu.delegate = self
+        editMenu = menu
         return menu
+    }
+
+    /// AppKit appends "Writing Tools", "AutoFill", "Emoji & Symbols" and friends to any menu titled
+    /// "Edit" — at `setMainMenu` time and again on each update. OMGUI's Edit menu is `Cu&t /
+    /// &Copy / &Paste / Select &All` and nothing else.
+    func trimEditMenu() {
+        guard let menu = editMenu else { return }
+        while menu.numberOfItems > MainMenuController.editItemCount {
+            menu.removeItem(at: menu.numberOfItems - 1)
+        }
     }
 
     private func makeViewMenu() -> NSMenu {
@@ -238,6 +262,8 @@ final class MainMenuController: NSObject, NSMenuDelegate {
             for item in menu.items where item.tag < flags.count {
                 item.state = flags[item.tag] ? .on : .off
             }
+        } else if menu === editMenu {
+            trimEditMenu()
         } else if menu === recentMenu {
             menu.removeAllItems()
             for folder in model.recentFolders {
