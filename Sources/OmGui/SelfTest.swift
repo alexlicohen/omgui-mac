@@ -37,6 +37,7 @@ enum SelfTest {
             }
 
             say("backend = \(model.api.backend.name)")
+            say("menu: " + menuOutline())
 
             // Wait for the mock to enumerate.
             for _ in 0..<40 where model.rows.isEmpty { await pause(0.25) }
@@ -46,6 +47,8 @@ enum SelfTest {
             // Give the poller a moment so battery/session/interval are populated.
             for _ in 0..<40 where model.rows.contains(where: { $0.sessionText == "-" }) { await pause(0.25) }
             model.rebuildRows()
+            await pause(0.3)
+            say("splits: " + splitOutline())
             await shot("01-main-window.png")
 
             // --- Selection drives the toolbar -----------------------------------------------
@@ -65,16 +68,33 @@ enum SelfTest {
             if let target = withData.first {
                 model.selectedDeviceIds = [target]
                 model.selectionChanged()
-                say("download \(FilenameTemplate.deviceIdString(target)) into \(model.workspace.path)")
-                model.download()
-                var done = false
-                for _ in 0..<200 {
-                    await pause(0.1)
-                    model.rebuildRows()
-                    if let row = model.rows.first(where: { $0.deviceId == target }),
-                       row.downloadText == "Complete" { done = true; break }
+                say("one device with data selected -> toolbar download=\(model.toolbar.download) cancel=\(model.toolbar.cancel) clear=\(model.toolbar.clear) record=\(model.toolbar.record) stop=\(model.toolbar.stop)")
+
+                @MainActor func awaitDownload(_ expected: String) async -> Bool {
+                    for _ in 0..<300 {
+                        await pause(0.05)
+                        model.rebuildRows()
+                        if let row = model.rows.first(where: { $0.deviceId == target }),
+                           row.downloadText == expected { return true }
+                    }
+                    return false
                 }
+
+                // --- Cancel ------------------------------------------------------------------
+                say("download \(FilenameTemplate.deviceIdString(target)) into \(model.workspace.path), then cancel it")
+                model.download()
+                model.cancelDownload()
+                say("cancel: Download column reached 'Cancelled' = \(await awaitDownload("Cancelled"))")
+
+                // --- Download for real -------------------------------------------------------
+                model.download()
+                var done = await awaitDownload("Complete")
                 say("download \(done ? "completed" : "DID NOT COMPLETE")")
+
+                // --- Download again, over the file that is now there --------------------------
+                model.download()
+                done = await awaitDownload("Complete")
+                say("re-download over the existing file \(done ? "completed" : "DID NOT COMPLETE")")
                 model.refreshFiles()
                 say("workspace data files: " + model.dataFiles.map { "\($0.name) \($0.sizeText) MB \($0.dateText)" }.joined(separator: ", "))
                 await shot("04-downloaded.png")
@@ -121,6 +141,18 @@ enum SelfTest {
                 }
                 say("recordSetup.xml written: \(FileManager.default.fileExists(atPath: RecordingProfile.url(in: model.workspace).path))")
                 await shot("07-after-record.png")
+
+                // --- Stop ------------------------------------------------------------------------
+                model.selectedDeviceIds = [target]
+                model.selectionChanged()
+                say("recording device selected -> toolbar stop=\(model.toolbar.stop) record=\(model.toolbar.record)")
+                model.stopRecording()
+                for _ in 0..<300 where model.progressSheet != nil { await pause(0.1) }
+                await pause(0.5)
+                model.rebuildRows()
+                if let row = model.rows.first(where: { $0.deviceId == target }) {
+                    say("after stop: \(row.deviceText) recording=\(row.recordingText)")
+                }
             }
 
             // --- Clear -------------------------------------------------------------------------
@@ -136,15 +168,78 @@ enum SelfTest {
                 .joined(separator: " | "))
             await shot("08-after-clear.png")
 
+            // --- The other two tabs ------------------------------------------------------------
+            model.pluginQueue.enqueue(pluginName: "OmConvertPlugin",
+                                      source: model.dataFiles.first?.name ?? "01234_0000000001.cwa")
+            model.filesTab = 1
+            await shot("09-plugin-queue.png")
+            model.filesTab = 2
+            say("output files: \(model.outputFiles.count)")
+            await shot("10-output-files.png")
+            model.filesTab = 0
+            model.pluginQueue.clearCompleted()
+
             // --- Chrome toggles ------------------------------------------------------------------
             model.showLog = true
             model.persistViewFlags()
-            await shot("09-log-pane.png")
+            await pause(0.3)
+            say("splits with the log open: " + splitOutline())
+            await shot("11-log-pane.png")
+
+            // --- Options and About ---------------------------------------------------------------
+            model.showOptions = true
+            await shot("12-options.png")
+            model.showOptions = false
+            await pause(0.4)
+            model.showAbout = true
+            await shot("13-about.png")
+            model.showAbout = false
+            await pause(0.4)
+
+            // Leave the persisted View flags as they were found: the run is a test, not a session.
+            model.showLog = false
+            model.persistViewFlags()
 
             say("prompts answered: \(prompter.transcript.joined(separator: " | "))")
             say("done")
             completion()
         }
+    }
+
+    /// The `SplitterDistance` each `DesignerSplitView` in the window currently has, so the
+    /// transcript records the real geometry rather than a claim about it.
+    @MainActor
+    static func splitOutline() -> String {
+        guard let root = mainWindow?.contentView else { return "(no window)" }
+        var lines: [String] = []
+        func walk(_ view: NSView, depth: Int) {
+            if let split = view as? DesignerSplitView {
+                let sizes = split.subviews.map { sub -> String in
+                    if sub.isHidden { return "collapsed" }
+                    return String(format: "%.0f", split.isVertical ? sub.frame.width : sub.frame.height)
+                }
+                let axis = split.isVertical ? "V" : "H"
+                let extent = split.isVertical ? split.bounds.width : split.bounds.height
+                lines.append(String(format: "%@[%.0f]=%@", axis, extent, sizes.joined(separator: "/")))
+            }
+            for sub in view.subviews { walk(sub, depth: depth + 1) }
+        }
+        walk(root, depth: 0)
+        return lines.joined(separator: " ")
+    }
+
+    /// One line describing `NSApp.mainMenu`, so the transcript records the menu bar the run had.
+    @MainActor
+    static func menuOutline() -> String {
+        guard let main = NSApp.mainMenu else { return "(no main menu)" }
+        return main.items.dropFirst().map { top in
+            let children = (top.submenu?.items ?? []).map { item -> String in
+                if item.isSeparatorItem { return "-" }
+                let submenu = item.submenu.map { "(\($0.items.map(\.title).joined(separator: ", ")))" } ?? ""
+                return item.title + (item.isEnabled ? "" : "[disabled]") + submenu
+            }
+            return "\(top.title){\(children.joined(separator: " | "))}"
+        }.joined(separator: "  ")
     }
 
     /// The main window, however we can find it.
