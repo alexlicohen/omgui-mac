@@ -1,15 +1,21 @@
 SELF-TEST: backend = mock
+SELF-TEST: menu: File{Choose Working Folder... | Open Working Folder | Recent Folders() | - | Export Resampled WAV...[disabled] | Export Resampled CSV...[disabled] | Export Raw CSV...[disabled] | - | Exit}  Edit{Cut | Copy | Paste | - | Select All}  View{Toolbar | Status Bar | Preview | Device Properties | File Properties | Log}  Tools{Calculate SVM...[disabled] | Calculate Cut Points...[disabled] | Calculate Wear Time...[disabled] | Calculate Sleep Time...[disabled] | - | Plugins...[disabled] | - | Options...}  Help{About...}
 SELF-TEST: devices: 01234 [Devices] battery=- recording=Stopped (with data) | 05678 [Outbox] battery=- recording=Stopped | 09999 [Outbox] battery=- recording=Stopped
+SELF-TEST: splits: H[538]=538/collapsed H[538]=218/319 V[1056]=747/308 H[319]=89/229 V[1056]=738/317
 SELF-TEST: captured 01-main-window.png
 SELF-TEST: select all -> toolbar download=false clear=false record=false stop=false identify=true
 SELF-TEST: captured 02-all-selected.png
-SELF-TEST: identify: LED indices now [1, 1, 1]
+SELF-TEST: identify: LED indices now [5, 5, 5]
 SELF-TEST: captured 03-identify.png
-SELF-TEST: download 01234 into /tmp/omgui-shots/ws
+SELF-TEST: one device with data selected -> toolbar download=true cancel=false clear=true record=false stop=false
+SELF-TEST: download 01234 into <workspace>/ws, then cancel it
+SELF-TEST: cancel: Download column reached 'Cancelled' = true
 SELF-TEST: download completed
-SELF-TEST: workspace data files: 01234_0000000001.cwa 0.01 MB 02/09/26 16:19:49
+SELF-TEST: prompt confirm [Overwrite File?] File already exists:      <workspace>/ws/01234_0000000001.cwa  Overwrite existing file? -> OK
+SELF-TEST: re-download over the existing file completed
+SELF-TEST: workspace data files: 01234_0000000001.cwa 0.01 MB 02/09/26 17:06:22
 SELF-TEST: captured 04-downloaded.png
-SELF-TEST: file properties: Device ID=01234 Session ID=0000000001 Sampling Rate=100 Sampling Range=8 Time Start=2026-09-02 16:19:21 Time End=2026-09-02 16:19:40
+SELF-TEST: file properties: Device ID=01234 Session ID=0000000001 Sampling Rate=100 Sampling Range=8 Time Start=2026-09-02 17:05:54 Time End=2026-09-02 17:06:13
 SELF-TEST: captured 05-file-properties.png
 SELF-TEST: record dialog for 09999: gyro=false rateRange='' ok=true
 SELF-TEST: warnings: WARNINGS / • Selected device(s) not fully charged / 
@@ -17,10 +23,18 @@ SELF-TEST: captured 06-recording-settings.png
 SELF-TEST: after record: session=4321 recording=Always
 SELF-TEST: recordSetup.xml written: true
 SELF-TEST: captured 07-after-record.png
+SELF-TEST: recording device selected -> toolbar stop=true record=true
+SELF-TEST: after stop: 09999 recording=Stopped
 SELF-TEST: clear (full wipe) 3 device(s)
-SELF-TEST: prompt confirm [OmGui - /tmp/omgui-shots/ws] Wipe 3 device(s)? -> OK
+SELF-TEST: prompt confirm [OmGui - <workspace>/ws] Wipe 3 device(s)? -> OK
 SELF-TEST: after clear: 01234 session=0 recording=Stopped group=Charging | 09999 session=0 recording=Stopped group=Charging | 05678 session=0 recording=Stopped group=Standby
 SELF-TEST: captured 08-after-clear.png
-SELF-TEST: captured 09-log-pane.png
-SELF-TEST: prompts answered: confirm[OmGui - /tmp/omgui-shots/ws] Wipe 3 device(s)? -> OK
+SELF-TEST: captured 09-plugin-queue.png
+SELF-TEST: output files: 0
+SELF-TEST: captured 10-output-files.png
+SELF-TEST: splits with the log open: H[538]=417/120 H[417]=218/198 V[1056]=747/308 H[198]=40/157 V[1056]=738/317
+SELF-TEST: captured 11-log-pane.png
+SELF-TEST: captured 12-options.png
+SELF-TEST: captured 13-about.png
+SELF-TEST: prompts answered: confirm[Overwrite File?] File already exists:      <workspace>/ws/01234_0000000001.cwa  Overwrite existing file? -> OK | confirm[OmGui - <workspace>/ws] Wipe 3 device(s)? -> OK
 SELF-TEST: done

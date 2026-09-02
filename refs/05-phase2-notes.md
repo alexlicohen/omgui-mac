@@ -4,17 +4,19 @@ Everything below was verified on this machine (macOS 26.6, Xcode 26.6, Swift 6.3
 `MockBackend`. No hardware was available, so every device-side claim inherits the UNVERIFIED status
 recorded in `refs/04-phase1-notes.md`.
 
-Evidence for the acceptance criteria: `swift build -c release` clean; `swift test` = 166 tests, 0
-failures (75 from phase 1, 91 new); `refs/screenshots/*.png` are captures of the live window taken
-during a `--self-test` run of the release binary, and `/tmp` transcripts of that run show Download,
-Record, Clear and Identify completing against the mock.
+Evidence for the acceptance criteria: `swift build -c release` clean; `swift test` = 173 tests, 0
+failures (75 from phase 1, 98 new); `refs/screenshots/*.png` are captures of the live window taken
+during a `--self-test` run of the release binary, and `refs/screenshots/self-test-transcript.txt` is
+that run's log — it records the menu bar, the measured splitter distances, the toolbar enable state
+at each step, and Download / Cancel / overwrite-prompt / Record / Stop / Clear / Identify completing
+against the mock.
 
 ## Shape
 
 ```
 Sources/OmGuiCore   headless view models (no AppKit/SwiftUI) — testable without a window
 Sources/OmGui       the SwiftUI/AppKit shell
-Tests/OmGuiTests    91 cases over OmGuiCore
+Tests/OmGuiTests    98 cases over OmGuiCore
 ```
 
 `OmGuiCore` is a separate target only so `OmGuiTests` can link it; the executable target is still
@@ -37,6 +39,38 @@ Side benefits: the 1056x590 content size and the `MainForm` title are set exactl
 `.defaultSize` guesswork. Worth re-testing once the app is a signed bundle (phase 4) — it may just
 work then, but there is no reason to go back.
 
+**AppKit for the splitters, in one tree.** The five designer distances (218 / 747 / 89 / 738 / 562)
+are exact, and every splitter is draggable. Getting there took three attempts, and the shape of the
+final one is not obvious:
+
+* `HSplitView`/`VSplitView` distribute space by *ideal* size. Given two flexible panes they simply
+  halve the container, so the device table opened at 528 px rather than 747 and the preview strip at
+  ~180 rather than 89. There is no API to open a SwiftUI splitter at a point.
+* `NSSplitView`'s `addArrangedSubview` API lays out through Auto Layout and holding priorities;
+  in that mode `resizeSubviews(withOldSize:)` is never called, so `FixedPanel` cannot be reproduced,
+  and holding priorities alone ignore the panel minimums (opening the log collapsed the preview to
+  nothing). Plain `addSubview` plus an overridden `resizeSubviews`/`adjustSubviews` is required — and
+  even then NSSplitView re-distributes proportionally through some other path afterwards, so the
+  geometry is re-asserted at the end of `layout()`.
+* Nesting one `SplitPaneView` inside another's SwiftUI pane does not work: an `NSHostingView`
+  between two `NSSplitView`s does not reliably pass a frame change down, so opening the log left the
+  inner splitters believing they were still full height (they reported 537 px inside a 417 px
+  parent). `MainSplitView` therefore builds all four of `MainForm`'s containers as one AppKit tree
+  with `NSHostingView`s only at the five leaves. `SplitPaneView` (the generic two-pane wrapper) is
+  still used for `splitContainerFileProperties`, which sits inside the tab content and whose width —
+  the axis that matters for a vertical divider — never changes.
+
+The arithmetic lives in `OmGuiCore.SplitGeometry`, not in the view: a remembered `SplitterDistance`,
+the `Panel1MinSize`/`Panel2MinSize` clamp, and the three `FixedPanel` rules. Recomputing the panes
+from a stored distance rather than from the current frames is what stops one transient SwiftUI layout
+pass at a tiny size sticking forever, and the clamp is what keeps the log pane visible at all (562 is
+larger than the ~537 that container ever gets). `SplitGeometryTests` covers it.
+
+**The tab strip is hand-drawn.** SwiftUI's `TabView` renders no tab bar at all inside an
+`NSHostingView` — the tabs simply vanish — and where it does render it centres them, which a WinForms
+`TabControl` does not. `FilesTabView` draws the three tabs left-aligned along the top edge itself, and
+the selected index lives on `AppModel` so `--self-test` can capture all three tabs.
+
 **AppKit for the lists.** `devicesListView`, the two property grids and the three file lists are all
 one `NSOutlineView`-backed `GroupedTableView`: column headers, grid lines, full-row multi-select and
 WinForms-style group rows have no SwiftUI equivalent. Group rows arrive with a `nil` table column,
@@ -52,9 +86,12 @@ duplicated for testing.
 **`--self-test <dir>`** drives the real `AppModel` methods the toolbar buttons call, captures the
 window (and any attached sheet) to PNG at each step and prints a transcript. It exists because
 `screencapture` is unusable here: the terminal has no Screen Recording permission on this machine
-(`screencapture -x` fails with `could not create image from display`), so the screenshots in
+(`screencapture -x -l<id>` fails with `could not create image from window`), so the screenshots in
 `refs/screenshots/` are `NSView.cacheDisplay` renders of the live window instead. Same pixels, no
-TCC prompt.
+TCC prompt. The transcript also records `NSApp.mainMenu` and the measured splitter distances, so the
+menu bar and the layout are checkable without opening the app. The run restores the View flags it
+changes — it writes to the same `UserDefaults` domain the app uses, and leaving `Log` on made every
+later run start with the log pane open.
 
 ## Deviations from OMGUI, and why
 
@@ -62,10 +99,16 @@ TCC prompt.
   `splitContainerPreview.Panel1Collapsed = !previewToolStripMenuItem.Checked`, and Panel1 holds
   `splitContainerDevices` — so in OMGUI, unchecking "Preview" hides the *device table*. That is
   plainly a mislabelled panel rather than an intent; the port hides the `dataViewer` pane.
-* **Split proportions are initial, not exact.** The designer distances (218 / 747 / 89 / 738 / 562)
-  are supplied as `idealHeight`/`idealWidth` to `VSplitView`/`HSplitView`, which weighs them against
-  content size, so the preview strip opens taller than 89 px. Every splitter is draggable, and the
-  device pane, the device/property split and the file/property split land within a few pixels.
+* **The device splitter is draggable.** `splitContainerDevices` has `IsSplitterFixed = true`
+  upstream, i.e. it cannot be dragged at all. On a Mac the window is resized far more freely, so the
+  splitter is left draggable; its `FixedPanel.None` (proportional) resize rule is reproduced.
+* **Dialog titles are a header row.** A WinForms dialog shows `Form.Text` in its title bar; a macOS
+  sheet has no title bar. "Recording Settings", "Options" and "About OmGui" are rendered as a header
+  line inside the sheet instead (`DialogTitleBar`), with the strings unchanged.
+* **The Edit menu is trimmed.** macOS appends "Writing Tools", "AutoFill", "Start Dictation…" and
+  "Emoji & Symbols" to any menu titled "Edit", and appends them again on each update. OMGUI's Edit
+  menu is Cut / Copy / Paste / Select All, so the extras are removed after `setMainMenu` and on each
+  `menuNeedsUpdate`.
 * **Channel check-box order follows the designer, not `refs/03`.** `tableLayoutPanel1` adds them as
   X, Y, Z, ±1g, Light, Temp., Batt.%, Batt.V, Time, Gyro-X, Gyro-Y, Gyro-Z. `refs/03 §1` lists the
   three gyro boxes after Z; the designer is authoritative, so `refs/03` is wrong on this point.
@@ -149,7 +192,7 @@ collapses `New Data` into `Devices`, so the "New Data" group never appears (`str
 still there if a later phase wants it). `MockBackend` cannot model the eject/re-insert a real
 `FORMAT` causes, so the Clear flow's behaviour on hardware remains risk 4 in `refs/04`.
 
-## Test coverage (91 new cases)
+## Test coverage (98 new cases)
 
 * `RecordingSettingsTests` — every `updateWarningMessages` flag and every `labelRateRangeSetting`
   branch as a separate vector (including the three AX6 firmware rules from `refs/04` risk 7), the
@@ -164,6 +207,9 @@ still there if a later phase wants it). `MockBackend` cannot model the eject/re-
   a full download to completion with the `.part` rename, both overwrite-prompt answers, cancel,
   the download log line, clear/stop/record commit sequences against `MockBackend`, the config log
   line, the failure-message wording, and the identify blink sequence.
+* `SplitGeometryTests` — the `SplitterDistance` clamp, all three `FixedPanel` rules against the real
+  designer numbers, the degenerate-container guard, and the invariant that the panes always fill the
+  container and never go below `Panel1MinSize`.
 * `SettingsAndRowTests` — Options persistence and the recent-folder rules, `recordSetup.xml`
   round-trip, every device-row cell text and colour, the group order, the six toolbar enable rules,
   and the plugin queue.
