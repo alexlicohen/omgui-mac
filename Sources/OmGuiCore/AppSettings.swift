@@ -55,6 +55,7 @@ public final class AppSettings: @unchecked Sendable {
         public static let currentPluginFolder = "CurrentPluginFolder"
         public static let currentWorkingFolder = "CurrentWorkingFolder"
         public static let recentFolders = "RecentFolders"
+        public static let cutPointSettings = "CutPointSettings"
         public static let downloadLogFile = "DownloadLogFile"
         public static let configLogFile = "ConfigLogFile"
         public static let showAllFiles = "ShowAllFiles"
@@ -76,6 +77,7 @@ public final class AppSettings: @unchecked Sendable {
         defaults.register(defaults: [
             Key.filenameTemplate: FilenameTemplate.defaultTemplate,
             Key.currentPluginFolder: "",
+            Key.cutPointSettings: "",
             Key.currentWorkingFolder: "{MyDocuments}",
             Key.showAllFiles: false,
             Key.viewToolbar: true,
@@ -98,6 +100,13 @@ public final class AppSettings: @unchecked Sendable {
     public var pluginFolder: String {
         get { string(Key.currentPluginFolder) }
         set { set(newValue, Key.currentPluginFolder) }
+    }
+
+    /// `Properties.Settings.Default.CutPointSettings` — the Cut Points dialog remembers its
+    /// epoch/model/filter between runs.
+    public var cutPointSettings: String {
+        get { string(Key.cutPointSettings) }
+        set { set(newValue, Key.cutPointSettings) }
     }
 
     /// The stored template (may still contain `{MyDocuments}` and friends).
@@ -150,7 +159,8 @@ public final class AppSettings: @unchecked Sendable {
 
     /// Reset to the registered defaults (used by tests).
     public func removeAll() {
-        for key in [Key.filenameTemplate, Key.currentPluginFolder, Key.currentWorkingFolder,
+        for key in [Key.filenameTemplate, Key.currentPluginFolder, Key.cutPointSettings,
+                    Key.currentWorkingFolder,
                     Key.recentFolders, Key.downloadLogFile, Key.configLogFile, Key.showAllFiles,
                     Key.viewToolbar, Key.viewStatusBar, Key.viewPreview,
                     Key.viewDeviceProperties, Key.viewFileProperties, Key.viewLog] {

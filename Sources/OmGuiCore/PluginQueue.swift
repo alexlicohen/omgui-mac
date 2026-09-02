@@ -49,6 +49,10 @@ public final class PluginQueue: ObservableObject {
 
     @Published public private(set) var items: [PluginQueueItem] = []
 
+    /// Set by `ToolJobController` so the "Cancel" button also kills the helper process behind the
+    /// row (`pluginQueueWorker.CancelAsync()` → `conversionProcess.Kill()`).
+    public var onCancel: ((UUID) -> Void)?
+
     public init() {}
 
     @discardableResult
@@ -66,11 +70,14 @@ public final class PluginQueue: ObservableObject {
 
     /// The "Cancel" toolbar button — cancels the given rows (or every unfinished row).
     public func cancel(_ ids: Set<UUID>? = nil) {
+        var cancelled: [UUID] = []
         for index in items.indices {
             guard !items[index].isFinished else { continue }
             if let ids, !ids.contains(items[index].id) { continue }
             items[index].state = .cancelled
+            cancelled.append(items[index].id)
         }
+        for id in cancelled { onCancel?(id) }
     }
 
     /// The "Clear Completed" toolbar button.
