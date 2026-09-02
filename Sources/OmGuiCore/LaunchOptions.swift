@@ -23,8 +23,12 @@ public struct LaunchOptions: Sendable {
     public var resetIfUnresponsive = 3
     /// `-notimecheck` disables the `DISCHARGED?`/`DAMAGED?` battery-column prefixes.
     public var timeCheck = true
-    /// `--self-test <dir>` — drive the flows headlessly against the mock and write screenshots.
+    /// `--self-test [dir]` — drive the flows headlessly against the mock and write screenshots.
     public var selfTestDirectory: String?
+    /// True when `--self-test` was given without a directory, so the run defaulted everything: the
+    /// screenshots go to a temporary folder and so does the working folder, which keeps a bare
+    /// `OmGui --mock --self-test` from writing test data into whatever workspace was last used.
+    public var selfTestUsedDefaults = false
     /// Unrecognised arguments, reported to the log exactly as OMGUI does.
     public var warnings: [String] = []
 
@@ -62,7 +66,14 @@ public struct LaunchOptions: Sendable {
             case "noreset": resetIfUnresponsive = 0
             case "timecheck": timeCheck = true
             case "notimecheck": timeCheck = false
-            case "self-test", "selftest": selfTestDirectory = next()
+            case "self-test", "selftest":
+                // The directory is optional: a bare `--self-test` runs in a temporary folder.
+                if index + 1 < rest.count, !rest[index + 1].hasPrefix("-") {
+                    selfTestDirectory = next()
+                } else {
+                    selfTestDirectory = LaunchOptions.defaultSelfTestDirectory
+                    selfTestUsedDefaults = true
+                }
             default:
                 if raw.hasPrefix("-") || raw.hasPrefix("/") {
                     warnings.append("ERROR: Ignoring unknown option: \(raw)")
@@ -74,8 +85,26 @@ public struct LaunchOptions: Sendable {
         }
     }
 
+    /// Where a bare `--self-test` puts its screenshots and its working folder.
+    public static let defaultSelfTestDirectory =
+        URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("omgui-self-test", isDirectory: true).path
+
+    /// Where a bare `--self-test` puts its mock devices.
+    public static let defaultSelfTestMockRoot =
+        URL(fileURLWithPath: defaultSelfTestDirectory, isDirectory: true)
+            .appendingPathComponent("mock", isDirectory: true).path
+
     /// The backend this launch asks for.
     public func makeBackend() -> DeviceBackend {
+        if useMock, selfTestUsedDefaults {
+            // A bare `--self-test` gets a fresh set of mock devices every run: the state a previous
+            // run persisted would leave them cleared, and the Download leg would find no data.
+            return MockBackend(root: URL(fileURLWithPath: mockRoot ?? LaunchOptions.defaultSelfTestMockRoot,
+                                         isDirectory: true),
+                               resetVolumes: true,
+                               persistState: false)
+        }
         var environment: [String: String] = [:]
         if useMock { environment[OmApi.mockEnvironmentKey] = "1" }
         if let mockRoot { environment[OmApi.mockRootEnvironmentKey] = mockRoot }

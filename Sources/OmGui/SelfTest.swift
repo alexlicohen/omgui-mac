@@ -11,11 +11,14 @@ import SwiftUI
 enum SelfTest {
 
     nonisolated(unsafe) static var window: NSWindow?
+    /// Where `shot(...)` writes, so a leg can also capture a frame synchronously.
+    @MainActor static var screenshotFolder: URL?
 
     @MainActor
     static func run(model: AppModel, directory: String, completion: @escaping @MainActor () -> Void) {
         let folder = URL(fileURLWithPath: directory, isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        SelfTest.screenshotFolder = folder
         let prompter = ScriptedPrompter()
         model.prompter = prompter
 
@@ -38,6 +41,16 @@ enum SelfTest {
 
             say("backend = \(model.api.backend.name)")
             say("menu: " + menuOutline())
+
+            // A bare `--self-test` keeps everything in a temporary folder, so a plain
+            // `OmGui --mock --self-test` never writes into whatever workspace was last used.
+            if model.options.selfTestUsedDefaults {
+                let scratch = folder.appendingPathComponent("workspace", isDirectory: true)
+                try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+                model.setWorkingFolder(scratch.path, remember: false)
+                let mockRoot = (model.api.backend as? MockBackend)?.root.path ?? "(not the mock)"
+                say("defaults: workspace \(scratch.path), mock root \(mockRoot)")
+            }
 
             // Wait for the mock to enumerate.
             for _ in 0..<40 where model.rows.isEmpty { await pause(0.25) }
@@ -185,6 +198,9 @@ enum SelfTest {
             await pause(0.3)
             say("splits with the log open: " + splitOutline())
             await shot("11-log-pane.png")
+
+            // --- The data viewer -------------------------------------------------------------------
+            await SelfTest.exerciseViewer(model: model, say: say, shot: shot, pause: pause)
 
             // --- Options and About ---------------------------------------------------------------
             model.showOptions = true
