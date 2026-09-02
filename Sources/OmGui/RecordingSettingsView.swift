@@ -22,8 +22,11 @@ struct RecordingSettingsView: View {
             DialogTitleBar(title: "Recording Settings")
             form
         }
-        .frame(width: 560)
+        .frame(width: RecordingSettingsView.dialogWidth)
     }
+
+    /// `DateRangeForm.ClientSize` is 485 x 617; macOS controls need more room for the same fields.
+    static let dialogWidth: CGFloat = 640
 
     private var form: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -33,17 +36,6 @@ struct RecordingSettingsView: View {
             HStack(alignment: .top, spacing: 8) {
                 studyBox
                 subjectBox
-            }
-            if let warning = validation.warningText {
-                ScrollView {
-                    Text(warning)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.red)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(height: 74)
-                .background(Color(nsColor: .textBackgroundColor))
-                .border(Color.secondary.opacity(0.4))
             }
             Divider()
             bottomBar
@@ -56,9 +48,11 @@ struct RecordingSettingsView: View {
     private var sessionRow: some View {
         HStack(spacing: 8) {
             Text("Recording Session ID")
+            // `numericUpDownSessionID` is a whole number with no thousands separator: the site
+            // types the participant number and reads it straight back.
             TextField("", value: Binding(get: { context.settings.sessionId },
                                          set: { context.settings.sessionId = min($0, RecordingSettings.sessionIdMaximum) }),
-                      format: .number)
+                      format: .number.grouping(.never))
                 .frame(width: 120)
             Stepper("", value: Binding(get: { Int(context.settings.sessionId) },
                                        set: { context.settings.sessionId = UInt32(max(0, min($0, Int(RecordingSettings.sessionIdMaximum)))) }),
@@ -82,7 +76,7 @@ struct RecordingSettingsView: View {
                     Spacer()
                 }
                 HStack(spacing: 8) {
-                    Text("Freq. (Hz)")
+                    Text("Freq. (Hz)").fixedSize()
                     Picker("", selection: $context.settings.frequencyIndex) {
                         ForEach(RecordingSettings.frequencyLabels.indices, id: \.self) { index in
                             Text(RecordingSettings.frequencyLabels[index]).tag(index)
@@ -91,7 +85,7 @@ struct RecordingSettingsView: View {
                     .labelsHidden()
                     .frame(width: 80)
 
-                    Text("Range (\u{00B1}g)")
+                    Text("Range (\u{00B1}g)").fixedSize()
                     Picker("", selection: $context.settings.rangeIndex) {
                         ForEach(RecordingSettings.rangeLabels.indices, id: \.self) { index in
                             Text(RecordingSettings.rangeLabels[index]).tag(index)
@@ -101,7 +95,7 @@ struct RecordingSettingsView: View {
                     .frame(width: 64)
 
                     if settings.hasSyncGyro {
-                        Text("Gyro (\u{00B1}dps)")
+                        Text("Gyro (\u{00B1}dps)").fixedSize()
                         Picker("", selection: $context.settings.gyroIndex) {
                             ForEach(RecordingSettings.gyroLabels.indices, id: \.self) { index in
                                 Text(RecordingSettings.gyroLabels[index]).tag(index)
@@ -112,7 +106,7 @@ struct RecordingSettingsView: View {
                     }
 
                     Spacer()
-                    Button("Defaults") { context.settings.applyDefaults() }
+                    Button("Defaults") { context.settings.applyDefaults() }.fixedSize()
                 }
             }
             .padding(4)
@@ -263,28 +257,70 @@ struct RecordingSettingsView: View {
 
     // MARK: - Bottom bar
 
+    /// `panelBottom` — `richTextBoxWarning` (292 x 94 at (6,5)) on the left and `panelButtons`
+    /// (180 x 96 at (301,5): the check boxes, then OK and Cancel side by side at the bottom) on
+    /// the right, exactly as `DateRangeForm.Designer.cs` docks them.
     private var bottomBar: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 2) {
-                Toggle("Flash during recording", isOn: $context.settings.flash)
-                if !settings.hasSyncGyro {
-                    Toggle("Lower Power (Noisier)", isOn: $context.settings.lowPower)
-                    Toggle("Unpacked data", isOn: $context.settings.unpacked)
-                }
+        HStack(alignment: .top, spacing: 9) {
+            warningsBox
+            buttonsPanel
+        }
+        .frame(height: RecordingSettingsView.bottomPanelHeight)
+    }
+
+    /// `panelButtons.Size` / `richTextBoxWarning.Size`.
+    static let bottomPanelHeight: CGFloat = 96
+    static let buttonsPanelWidth: CGFloat = 180
+    /// `SystemColors.Info` — the pale yellow WinForms paints a tooltip/notice box.
+    static let warningBackground = Color(nsColor: NSColor(red: 1.0, green: 1.0, blue: 225.0 / 255.0, alpha: 1))
+    /// `SystemColors.InfoText`.
+    static let warningForeground = Color(nsColor: NSColor(red: 0, green: 0, blue: 0, alpha: 1))
+
+    /// `richTextBoxWarning`: `Visible = false` while there is nothing to say, so the box does not
+    /// draw -- but the space it occupies stays reserved, which is what docking it does upstream.
+    @ViewBuilder private var warningsBox: some View {
+        if let warning = validation.warningText {
+            ScrollView {
+                Text(warning)
+                    .font(.system(size: 11))
+                    .foregroundStyle(RecordingSettingsView.warningForeground)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(4)
             }
-            .toggleStyle(.checkbox)
-            Spacer()
-            VStack(spacing: 6) {
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(RecordingSettingsView.warningBackground)
+            .overlay(Rectangle().stroke(Color(nsColor: .separatorColor), lineWidth: 1))
+            .accessibilityIdentifier("recording.warnings")
+        } else {
+            Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var buttonsPanel: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Toggle("Flash during recording", isOn: $context.settings.flash)
+            // `checkBoxLowPower` / `checkBoxUnpacked` are hidden on a gyro device
+            // (`DateRangeForm.cs:103`/`:106`).
+            if !settings.hasSyncGyro {
+                Toggle("Lower Power (Noisier)", isOn: $context.settings.lowPower)
+                Toggle("Unpacked data", isOn: $context.settings.unpacked)
+            }
+            Spacer(minLength: 0)
+            HStack(spacing: 6) {
                 Button("OK") {
                     model.commitRecording(context.settings, devices: context.devices)
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(!validation.okEnabled)
+                .frame(width: 85)
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
+                    .frame(width: 85)
             }
-            .frame(width: 90)
         }
+        .toggleStyle(.checkbox)
+        .frame(width: RecordingSettingsView.buttonsPanelWidth, alignment: .leading)
     }
 }

@@ -84,22 +84,25 @@ struct ContentView: View {
                 })
     }
 
+    /// One section, headed "Default".
+    ///
+    /// `DeviceListView` registers the nine category groups but `MainForm` never puts an item in
+    /// one (`MainForm.cs:367`/`:397`), so V1.0.0.45 shows every connected device under the
+    /// `ListView`'s implicit default group — the "Default" header in the MOP's screenshot. See
+    /// `DeviceGroup` and `refs/09-mop-alignment-notes.md`.
     private var deviceSections: [GridSection] {
-        let grouped = Dictionary(grouping: model.rows, by: \.category)
-        return SourceCategory.displayOrder.compactMap { category in
-            guard let rows = grouped[category], !rows.isEmpty else { return nil }
-            return GridSection(id: category.rawValue,
-                               title: category.groupName,
-                               rows: rows.map { row in
-                                   GridRow(id: String(row.deviceId), cells: [
-                                       GridCell(row.deviceText, iconIndex: row.ledIconIndex),
-                                       GridCell(row.sessionText),
-                                       GridCell(row.batteryText, color: row.batteryColor),
-                                       GridCell(row.downloadText, color: row.downloadColor),
-                                       GridCell(row.recordingText, color: row.recordingColor),
-                                   ])
-                               })
-        }
+        guard !model.rows.isEmpty else { return [] }
+        return [GridSection(id: DeviceGroup.defaultIdentifier,
+                            title: DeviceGroup.defaultTitle,
+                            rows: model.rows.map { row in
+                                GridRow(id: String(row.deviceId), cells: [
+                                    GridCell(row.deviceText, iconIndex: row.ledIconIndex),
+                                    GridCell(row.sessionText),
+                                    GridCell(row.batteryText, color: row.batteryColor),
+                                    GridCell(row.downloadText, color: row.downloadColor),
+                                    GridCell(row.recordingText, color: row.recordingColor),
+                                ])
+                            })]
     }
 
     // MARK: - Preview
@@ -131,12 +134,94 @@ struct ContentView: View {
 /// `devicesListView`'s columns and widths.
 enum DeviceColumns {
     static let all = [
-        GridColumn("device", "Device", width: 70),
+        // `columnDevice.Width = 70` fits a 7-digit ID in Segoe UI 9 pt but not in the macOS system
+        // font at 11 pt, where "6036222" plus the LED circle needs 72 pt. The MOP's device IDs are
+        // seven digits, so the column is widened rather than allowed to truncate them
+        // (`refs/09-mop-alignment-notes.md`); the other four widths are the designer's.
+        GridColumn("device", "Device", width: 84),
         GridColumn("session", "Session Id", width: 90),
         GridColumn("battery", "Battery", width: 70),
         GridColumn("download", "Download", width: 90),
         GridColumn("recording", "Recording", width: 280),
     ]
+}
+
+/// The toolbar images.
+///
+/// Upstream sets one `Image` per `ToolStripButton` (`MainForm.Designer.cs`), and the MOP names one
+/// of them by its picture -- "the \"Clear\" button, which has an eraser icon next to it" -- so the
+/// port needs icons, not just labels. Each entry names the SF Symbol that stands in for OMGUI's
+/// PNG, and the colour upstream's icon is drawn in (nil = the normal template tint).
+struct ToolbarIcon: Equatable {
+    let symbol: String
+    let color: NSColor?
+
+    init(_ symbol: String, _ color: NSColor? = nil) {
+        self.symbol = symbol
+        self.color = color
+    }
+
+    // toolStripMain (`Download.png`, a red circle-x, `Eraser.png`, `RecordHS.png`, `StopHS.png`,
+    // a lit bulb).
+    static let download = ToolbarIcon("square.and.arrow.down")
+    static let cancel = ToolbarIcon("xmark.circle", .secondaryLabelColor)
+    static let clear = ToolbarIcon("eraser.fill")
+    static let record = ToolbarIcon("circle.fill", .systemRed)
+    static let stop = ToolbarIcon("stop.fill", .secondaryLabelColor)
+    static let identify = ToolbarIcon("lightbulb.fill")
+
+    // toolStripFiles (`Resources.Export`, `FunctionHS`, `User`, `SyncTime`,
+    // `EditBrightContrastHS`, the plugin jigsaw).
+    static let export = ToolbarIcon("square.and.arrow.up")
+    static let svm = ToolbarIcon("function")
+    static let cutPoints = ToolbarIcon("person.fill")
+    static let wearTime = ToolbarIcon("clock.fill")
+    static let sleep = ToolbarIcon("moon.zzz.fill")
+    static let plugins = ToolbarIcon("puzzlepiece.extension.fill")
+
+    static let all: [(String, ToolbarIcon)] = [
+        ("Download", .download), ("Cancel", .cancel), ("Clear", .clear),
+        ("Record...", .record), ("Stop", .stop), ("Identify", .identify),
+        ("Export", .export), ("SVM...", .svm), ("Cut Points...", .cutPoints),
+        ("Wear Time...", .wearTime), ("Sleep Analysis...", .sleep), ("Plugins...", .plugins),
+    ]
+
+    /// The `NSImage`, coloured where upstream's icon is coloured. Returns nil when the symbol is
+    /// missing from this OS, which `--self-test` checks for.
+    func nsImage(pointSize: CGFloat = 11) -> NSImage? {
+        guard let base = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) else { return nil }
+        var configuration = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
+        if let color { configuration = configuration.applying(.init(paletteColors: [color])) }
+        let image = base.withSymbolConfiguration(configuration) ?? base
+        image.isTemplate = (color == nil)
+        return image
+    }
+
+    @ViewBuilder var view: some View {
+        if let image = nsImage() {
+            Image(nsImage: image)
+        } else {
+            Image(systemName: symbol)
+        }
+    }
+}
+
+/// A toolbar button drawn the way a WinForms `ToolStripButton` is: image then text.
+struct ToolbarButton: View {
+    let title: String
+    let icon: ToolbarIcon
+    var help: String?
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                icon.view
+                Text(title)
+            }
+        }
+        .help(help ?? title)
+    }
 }
 
 /// `toolStripMain`.
@@ -145,23 +230,26 @@ struct DeviceToolbar: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Button("Download") { model.download() }
+            ToolbarButton(title: "Download", icon: .download) { model.download() }
                 .disabled(!model.toolbar.download)
-            Button("Cancel") { model.cancelDownload() }
-                .disabled(!model.toolbar.cancel)
-                .help("Cancel Download")
-            Button("Clear") { model.clear(shiftHeld: NSEvent.modifierFlags.contains(.shift)) }
-                .disabled(!model.toolbar.clear)
-                .help("Clear Device (hold Shift for a quick format instead of a full wipe)")
+            ToolbarButton(title: "Cancel", icon: .cancel, help: "Cancel Download") {
+                model.cancelDownload()
+            }
+            .disabled(!model.toolbar.cancel)
+            ToolbarButton(title: "Clear", icon: .clear,
+                          help: "Clear Device (hold Shift for a quick format instead of a full wipe)") {
+                model.clear(shiftHeld: NSEvent.modifierFlags.contains(.shift))
+            }
+            .disabled(!model.toolbar.clear)
             Divider().frame(height: 16)
-            Button("Record...") { model.openRecordingSettings() }
-                .disabled(!model.toolbar.record)
-                .help("Record Interval")
-            Button("Stop") { model.stopRecording() }
+            ToolbarButton(title: "Record...", icon: .record, help: "Record Interval") {
+                model.openRecordingSettings()
+            }
+            .disabled(!model.toolbar.record)
+            ToolbarButton(title: "Stop", icon: .stop, help: "Stop Recording") { model.stopRecording() }
                 .disabled(!model.toolbar.stop)
-                .help("Stop Recording")
             Divider().frame(height: 16)
-            Button("Identify") { model.identifySelected() }
+            ToolbarButton(title: "Identify", icon: .identify) { model.identifySelected() }
                 .disabled(!model.toolbar.identify)
             Spacer()
         }
@@ -303,18 +391,24 @@ struct FilesTabView: View {
             HStack(spacing: 6) {
                 // `toolStripFiles` — every item is live only while a file is selected
                 // (`filesListView_SelectedIndexChanged` / `FilesResetToolStripButtons`).
-                Menu("Export") {
+                Menu {
                     Button("Export Resampled WAV...") { model.exportResampledWav() }
                     Button("Export Resampled CSV...") { model.exportResampledCsv() }
                     Button("Export Raw CSV...") { model.exportRawCsv() }
+                } label: {
+                    HStack(spacing: 4) {
+                        ToolbarIcon.export.view
+                        Text("Export")
+                    }
                 }
                 .disabled(!model.fileToolbarEnabled)
+                .help("Export data")
                 .fixedSize()
-                fileToolButton("SVM...") { model.calculateSvm() }
-                fileToolButton("Cut Points...") { model.calculateCutPoints() }
-                fileToolButton("Wear Time...") { model.calculateWearTime() }
-                fileToolButton("Sleep Analysis...") { model.calculateSleepTime() }
-                fileToolButton("Plugins...") { model.showPlugins() }
+                fileToolButton("SVM...", .svm, "Calculate the scalar vector magnitude") { model.calculateSvm() }
+                fileToolButton("Cut Points...", .cutPoints, "Calculate energy 'cut points'") { model.calculateCutPoints() }
+                fileToolButton("Wear Time...", .wearTime, "Calculate wear time") { model.calculateWearTime() }
+                fileToolButton("Sleep Analysis...", .sleep, "Sleep Analysis") { model.calculateSleepTime() }
+                fileToolButton("Plugins...", .plugins, "Plugins") { model.showPlugins() }
                 Divider().frame(height: 14)
                 Button(model.showFilesButtonTitle) { model.toggleShowAllFiles() }
                 Spacer()
@@ -340,8 +434,9 @@ struct FilesTabView: View {
         }
     }
 
-    private func fileToolButton(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(title, action: action)
+    private func fileToolButton(_ title: String, _ icon: ToolbarIcon, _ help: String,
+                                action: @escaping () -> Void) -> some View {
+        ToolbarButton(title: title, icon: icon, help: help, action: action)
             .disabled(!model.fileToolbarEnabled)
     }
 

@@ -17,8 +17,8 @@ final class AppModel: ObservableObject {
     let settings: AppSettings
     let api: OmApi
 
-    /// `MainForm.defaultTitleText`.
-    static let defaultTitle = "OmGui"
+    /// `MainForm.defaultTitleText` — "Open Movement [V<version>]" (`AppInfo`).
+    static var defaultTitle: String { AppInfo.defaultTitleText() }
 
     // MARK: - Devices
 
@@ -63,9 +63,12 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var logText = ""
     @Published var statusText = ""
+    /// The last "Recording configured on ..." line, held in the status bar until the selection
+    /// changes so a site can read the Form 2 date/time off the window as well as the Log.
+    @Published private(set) var recordingConfirmation: String?
     @Published private(set) var progress: Double?
 
-    @Published var windowTitle = AppModel.defaultTitle
+    @Published var windowTitle = AppInfo.defaultTitleText()
 
     // MARK: - Sheets
 
@@ -187,6 +190,10 @@ final class AppModel: ObservableObject {
 
     // MARK: - Log
 
+    /// Empties the Log pane. Only `--self-test` uses it, so a captured screenshot shows the app's
+    /// own output rather than the transcript the run has been writing alongside it.
+    func clearLog() { logText = "" }
+
     func log(_ message: String) {
         logText += message + "\n"
         if logText.count > 400_000 { logText.removeFirst(logText.count - 400_000) }
@@ -287,13 +294,13 @@ final class AppModel: ObservableObject {
     func rebuildRows() {
         let devices = api.devices
         devicesById = Dictionary(uniqueKeysWithValues: devices.map { ($0.deviceId, $0) })
+        // `DeviceListView.Sorting = SortOrder.Ascending` sorts on the Device column. Category was
+        // only ever a grouping key, and `MainForm` never assigns a group (see `DeviceGroup`), so
+        // sorting by category here would impose an order the user has no header to explain.
         rows = devices
             .map { DeviceRow(device: $0, timeCheck: options.timeCheck) }
-            .sorted {
-                $0.category.displayIndex != $1.category.displayIndex
-                    ? $0.category.displayIndex < $1.category.displayIndex
-                    : $0.deviceId < $1.deviceId
-            }
+            .sorted { $0.deviceText == $1.deviceText ? $0.deviceId < $1.deviceId
+                                                     : $0.deviceText < $1.deviceText }
         selectedDeviceIds = selectedDeviceIds.filter { devicesById[$0] != nil }
         selectionChanged()
     }
@@ -345,6 +352,10 @@ final class AppModel: ObservableObject {
 
     private func updateStatus() {
         guard progressSheet == nil else { return }
+        if let recordingConfirmation {
+            statusText = recordingConfirmation
+            return
+        }
         var parts: [String] = []
         parts.append("\(rows.count) device(s)")
         if !selectedDeviceIds.isEmpty { parts.append("\(selectedDeviceIds.count) selected") }
@@ -380,7 +391,7 @@ final class AppModel: ObservableObject {
             }
         }
         workspace = folder
-        windowTitle = "\(AppModel.defaultTitle) - \(settings.workingFolderTemplate)"
+        windowTitle = AppInfo.windowTitle(workspace: folder)
         refreshFiles()
     }
 
@@ -425,6 +436,7 @@ final class AppModel: ObservableObject {
     var prompter: any UserPrompting = AlertPrompter()
 
     func download() {
+        recordingConfirmation = nil
         dataViewerSource = nil
         let devices = selectedDevices
         let outcome = DownloadFlow.run(devices: devices,
@@ -442,6 +454,7 @@ final class AppModel: ObservableObject {
     }
 
     func cancelDownload() {
+        recordingConfirmation = nil
         for device in selectedDevices where device.isDownloading {
             device.cancelDownload()
         }
@@ -449,6 +462,7 @@ final class AppModel: ObservableObject {
     }
 
     func clear(shiftHeld: Bool) {
+        recordingConfirmation = nil
         let wipe = ClearFlow.wipeRequested(shiftHeld: shiftHeld)
         let selection = selectedDevices
         guard ensureNoSelectedDownloading(selection, prompt: prompter) else { return }
@@ -471,6 +485,7 @@ final class AppModel: ObservableObject {
     }
 
     func stopRecording() {
+        recordingConfirmation = nil
         let devices = selectedDevices
         dataViewerSource = nil
         runInBackground(title: "Stopping", message: "Stopping devices...") { progress in
@@ -493,6 +508,7 @@ final class AppModel: ObservableObject {
 
     /// `toolStripButtonRecord_Click` up to the point the dialog opens.
     func openRecordingSettings() {
+        recordingConfirmation = nil
         let devices = selectedDevices
         guard ensureNoSelectedDownloading(devices, prompt: prompter) else { return }
 
@@ -511,6 +527,10 @@ final class AppModel: ObservableObject {
         var settingsModel = RecordingSettings(devices: devices.map(RecordingDeviceInfo.init(device:)))
         if let profile = RecordingProfile.load(from: workspace) {
             profile.apply(to: &settingsModel)
+        } else {
+            // No per-workspace profile yet: start from the ARIA MOP's values rather than OMGUI's,
+            // so the only field a site has to touch is the Recording Session ID (MOP §9.4.2).
+            settingsModel.applyInitialProfile()
         }
         settingsModel.finishInitialisation()
         recordingSheet = RecordingSheetContext(devices: devices, settings: settingsModel)
@@ -530,6 +550,13 @@ final class AppModel: ObservableObject {
                 self.log(line)
                 if let configLog { DownloadLog.append(line, to: configLog) }
             }
+            // The line a site copies into Lasso Form 2 ("Date recording initiated in OMGUI").
+            let now = Date()
+            let confirmations = result.configured.map {
+                RecordFlow.confirmationLine(deviceId: $0, sessionId: settingsModel.sessionId, at: now)
+            }
+            for line in confirmations { self.log(line) }
+            if let last = confirmations.last { self.recordingConfirmation = last }
             if !result.failures.isEmpty {
                 let details = result.failures.map { (id: $0.id, error: $0.error) }
                 self.prompter.warn(title: FlowMessages.errorTitle, message: FlowMessages.failed(details: details))

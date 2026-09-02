@@ -96,6 +96,11 @@ struct AboutView: View {
     static let description = "Open Movement GUI Application"
     static let upstreamCopyright = "Copyright (c) 2009-2022, Newcastle University, UK."
     static let portNote = "Native macOS port of Axivity/Open Movement's OMGUI (v1.0.0.45), built on the vendored libomapi."
+    /// The one deliberate behavioural deviation a site can see, so it is documented in the app and
+    /// not only in `refs/09-mop-alignment-notes.md`.
+    static let profileNote = """
+    Recording Settings opens at 100 Hz, \u{00B1}16 g, Gyro (disabled), Immediately on Disconnect the     first time a workspace is used (ARIA Wearables MOP \u{00A7}9.4.2). OMGUI's own default range is     \u{00B1}8 g; the "Defaults" button still restores 100 Hz / \u{00B1}8 g. Once a recording has been     configured, the workspace's recordSetup.xml is what the dialog reopens with.
+    """
 
     static var version: String {
         let info = Bundle.main.infoDictionary
@@ -147,6 +152,10 @@ struct AboutView: View {
             Text(AboutView.description).font(.system(size: 12))
             Text("Version \(AboutView.version)").font(.system(size: 11))
             Text(AboutView.portNote)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(AboutView.profileNote)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
