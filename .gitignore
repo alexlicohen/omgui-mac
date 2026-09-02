@@ -1,0 +1,9 @@
+upstream/
+.build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+.DS_Store
+build/
+dist/
+*.dmg
