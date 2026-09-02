@@ -7,7 +7,7 @@
 # One-time setup, before the first run:
 #   xcrun notarytool store-credentials omgui-notary \
 #       --apple-id <your Apple ID email> \
-#       --team-id V9R6KQRWSD \
+#       --team-id AR8KJ6ST6K \
 #       --password <app-specific password>
 # (Generate the app-specific password at appleid.apple.com; this stores it in the keychain, not
 # on disk. Override the profile name with NOTARY_PROFILE if you used a different one.)
