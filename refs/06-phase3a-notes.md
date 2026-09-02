@@ -65,9 +65,10 @@ Release build, this machine:
 | Full plot recompose, 959 pt wide | 3.0–4.5 ms mean at 40 pt high, 3.7 ms worst at 460 pt |
 | Cursor move (cached bitmap + overlays) | 0.3 ms |
 
-Debug builds are ~3× slower on the load and ~200× on the aggregation (no inlining, live bounds checks); the perf test's bound is set for those. "Without
-dropping frames" above means: the whole-file redraw path is 3–4 ms against a 16.7 ms frame, measured
-by `DataPlotView.measureRedraw()` inside the real running app, 20 recompositions per zoom level, at
+Debug builds are ~3× slower on the load and ~200× on the aggregation (no inlining, live bounds
+checks); the perf test's bound is set for those. "Without dropping frames" above means: the
+whole-file redraw path is 3–4 ms against a 16.7 ms frame, measured by
+`DataPlotView.measureRedraw()` inside the real running app, 20 recompositions per zoom level, at
 full extent / 1 h / 1 min on a two-day file — printed by `--self-test`.
 
 ## 2. Deviations from `DataViewer.cs`
