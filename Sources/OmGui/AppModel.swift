@@ -74,7 +74,22 @@ final class AppModel: ObservableObject {
     @Published var showAbout = false
     @Published var progressSheet: ProgressSheetContext?
 
+    /// Phase 3b: the Export/Tools option dialogs, the plugin list and the plugin's HTML form.
+    @Published var exportSheet: ExportSheetContext?
+    @Published var pluginsSheet: PluginsSheetContext?
+    @Published var runPluginSheet: RunPluginSheetContext?
+    /// `ExportData(List<string> files, …)` shows one "Export raw data" dialog per selected file.
+    var pendingRawCsv: [String] = []
+
     let pluginQueue = PluginQueue()
+
+    /// Runs the omconvert/cwa-convert/plugin jobs and feeds the Plugin Queue tab.
+    private(set) lazy var jobs: ToolJobController = {
+        let controller = ToolJobController(queue: pluginQueue)
+        controller.log = { [weak self] line in self?.log(line) }
+        controller.onJobFinished = { [weak self] _, _ in self?.refreshFiles() }
+        return controller
+    }()
 
     // MARK: - Internals
 

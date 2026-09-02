@@ -141,11 +141,11 @@ final class MainMenuController: NSObject, NSMenuDelegate {
         return item
     }
 
-    /// A phase-3 item: present and visible, but disabled and carrying the promised tooltip.
-    private func disabled(_ menu: NSMenu, _ title: String) {
-        let item = menu.addItem(withTitle: title, action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        item.toolTip = PhaseThree.tooltip
+    /// A menu item wired to one of `MainForm`'s handlers. The File and Tools items stay enabled
+    /// with no file selected, exactly as `menuStripMain` does: the handler itself puts up
+    /// "No files selected." (`GetSelectedFilesForConvert`).
+    private func item(_ menu: NSMenu, _ title: String, _ action: Selector) {
+        menu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self
     }
 
     private func fileMenu() -> NSMenu {
@@ -161,9 +161,9 @@ final class MainMenuController: NSObject, NSMenuDelegate {
         recentItem.submenu = recent
 
         menu.addItem(.separator())
-        disabled(menu, "Export Resampled WAV...")
-        disabled(menu, "Export Resampled CSV...")
-        disabled(menu, "Export Raw CSV...")
+        item(menu, "Export Resampled WAV...", #selector(exportResampledWav))
+        item(menu, "Export Resampled CSV...", #selector(exportResampledCsv))
+        item(menu, "Export Raw CSV...", #selector(exportRawCsv))
         menu.addItem(.separator())
         menu.addItem(withTitle: "Exit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
         return menu
@@ -208,12 +208,12 @@ final class MainMenuController: NSObject, NSMenuDelegate {
     private func toolsMenu() -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        disabled(menu, "Calculate SVM...")
-        disabled(menu, "Calculate Cut Points...")
-        disabled(menu, "Calculate Wear Time...")
-        disabled(menu, "Calculate Sleep Time...")
+        item(menu, "Calculate SVM...", #selector(calculateSvm))
+        item(menu, "Calculate Cut Points...", #selector(calculateCutPoints))
+        item(menu, "Calculate Wear Time...", #selector(calculateWearTime))
+        item(menu, "Calculate Sleep Time...", #selector(calculateSleepTime))
         menu.addItem(.separator())
-        disabled(menu, "Plugins...")
+        item(menu, "Plugins...", #selector(showPlugins))
         menu.addItem(.separator())
         menu.addItem(withTitle: "Options...", action: #selector(showOptions), keyEquivalent: "").target = self
         return menu
@@ -230,6 +230,14 @@ final class MainMenuController: NSObject, NSMenuDelegate {
     @objc private func chooseFolder() { model.chooseWorkingFolder() }
     @objc private func openFolder() { model.openWorkingFolderInFinder() }
     @objc private func showOptions() { model.showOptions = true }
+    @objc private func exportResampledWav() { model.exportResampledWav() }
+    @objc private func exportResampledCsv() { model.exportResampledCsv() }
+    @objc private func exportRawCsv() { model.exportRawCsv() }
+    @objc private func calculateSvm() { model.calculateSvm() }
+    @objc private func calculateCutPoints() { model.calculateCutPoints() }
+    @objc private func calculateWearTime() { model.calculateWearTime() }
+    @objc private func calculateSleepTime() { model.calculateSleepTime() }
+    @objc private func showPlugins() { model.showPlugins() }
     @objc private func showAbout() { model.showAbout = true }
 
     @objc private func selectAllDevices() {

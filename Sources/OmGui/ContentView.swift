@@ -65,6 +65,15 @@ struct ContentView: View {
         .sheet(item: $model.progressSheet) { context in
             ProgressSheet(context: context).environmentObject(model)
         }
+        .sheet(item: $model.exportSheet) { context in
+            ExportSheet(context: context).environmentObject(model)
+        }
+        .sheet(item: $model.pluginsSheet) { context in
+            PluginsSheet(context: context).environmentObject(model)
+        }
+        .sheet(item: $model.runPluginSheet) { context in
+            RunPluginSheet(context: context).environmentObject(model)
+        }
     }
 
     private var deviceSelectionBinding: Binding<Set<String>> {
@@ -292,19 +301,20 @@ struct FilesTabView: View {
     private var dataFilesTab: some View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
+                // `toolStripFiles` — every item is live only while a file is selected
+                // (`filesListView_SelectedIndexChanged` / `FilesResetToolStripButtons`).
                 Menu("Export") {
-                    Button("Export Resampled WAV...") {}.disabled(true)
-                    Button("Export Resampled CSV...") {}.disabled(true)
-                    Button("Export Raw CSV...") {}.disabled(true)
+                    Button("Export Resampled WAV...") { model.exportResampledWav() }
+                    Button("Export Resampled CSV...") { model.exportResampledCsv() }
+                    Button("Export Raw CSV...") { model.exportRawCsv() }
                 }
-                .disabled(true)
-                .help(PhaseThree.tooltip)
+                .disabled(!model.fileToolbarEnabled)
                 .fixedSize()
-                phaseThreeButton("SVM...")
-                phaseThreeButton("Cut Points...")
-                phaseThreeButton("Wear Time...")
-                phaseThreeButton("Sleep Analysis...")
-                phaseThreeButton("Plugins...")
+                fileToolButton("SVM...") { model.calculateSvm() }
+                fileToolButton("Cut Points...") { model.calculateCutPoints() }
+                fileToolButton("Wear Time...") { model.calculateWearTime() }
+                fileToolButton("Sleep Analysis...") { model.calculateSleepTime() }
+                fileToolButton("Plugins...") { model.showPlugins() }
                 Divider().frame(height: 14)
                 Button(model.showFilesButtonTitle) { model.toggleShowAllFiles() }
                 Spacer()
@@ -330,10 +340,9 @@ struct FilesTabView: View {
         }
     }
 
-    private func phaseThreeButton(_ title: String) -> some View {
-        Button(title) {}
-            .disabled(true)
-            .help(PhaseThree.tooltip)
+    private func fileToolButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .disabled(!model.fileToolbarEnabled)
     }
 
     // MARK: Plugin Queue
@@ -378,10 +387,6 @@ struct FilesTabView: View {
                          selection: Binding(get: { model.selectedOutputPaths },
                                             set: { model.selectedOutputPaths = $0 }))
     }
-}
-
-enum PhaseThree {
-    static let tooltip = "available in phase 3"
 }
 
 enum FileColumns {
