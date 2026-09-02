@@ -1,0 +1,26 @@
+SELF-TEST: backend = mock
+SELF-TEST: devices: 01234 [Devices] battery=- recording=Stopped (with data) | 05678 [Outbox] battery=- recording=Stopped | 09999 [Outbox] battery=- recording=Stopped
+SELF-TEST: captured 01-main-window.png
+SELF-TEST: select all -> toolbar download=false clear=false record=false stop=false identify=true
+SELF-TEST: captured 02-all-selected.png
+SELF-TEST: identify: LED indices now [1, 1, 1]
+SELF-TEST: captured 03-identify.png
+SELF-TEST: download 01234 into /tmp/omgui-shots/ws
+SELF-TEST: download completed
+SELF-TEST: workspace data files: 01234_0000000001.cwa 0.01 MB 02/09/26 16:19:49
+SELF-TEST: captured 04-downloaded.png
+SELF-TEST: file properties: Device ID=01234 Session ID=0000000001 Sampling Rate=100 Sampling Range=8 Time Start=2026-09-02 16:19:21 Time End=2026-09-02 16:19:40
+SELF-TEST: captured 05-file-properties.png
+SELF-TEST: record dialog for 09999: gyro=false rateRange='' ok=true
+SELF-TEST: warnings: WARNINGS / • Selected device(s) not fully charged / 
+SELF-TEST: captured 06-recording-settings.png
+SELF-TEST: after record: session=4321 recording=Always
+SELF-TEST: recordSetup.xml written: true
+SELF-TEST: captured 07-after-record.png
+SELF-TEST: clear (full wipe) 3 device(s)
+SELF-TEST: prompt confirm [OmGui - /tmp/omgui-shots/ws] Wipe 3 device(s)? -> OK
+SELF-TEST: after clear: 01234 session=0 recording=Stopped group=Charging | 09999 session=0 recording=Stopped group=Charging | 05678 session=0 recording=Stopped group=Standby
+SELF-TEST: captured 08-after-clear.png
+SELF-TEST: captured 09-log-pane.png
+SELF-TEST: prompts answered: confirm[OmGui - /tmp/omgui-shots/ws] Wipe 3 device(s)? -> OK
+SELF-TEST: done
