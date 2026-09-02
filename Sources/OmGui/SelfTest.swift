@@ -78,9 +78,11 @@ enum SelfTest {
 
             // --- refs/08: the MOP alignment checks and the SOP screenshots --------------------
             SelfTest.checkMopAlignment(model: model, say: say, expect: expect)
+            // NB: this runs a Record on 6036222 (session 1042), so it must not be followed by a
+            // re-shot of 01-main-window.png -- that reference frame is the MOP's own row
+            // ("6036222  0  93%  Stopped") and is captured above, before the recording.
             await SelfTest.captureSopImages(model: model, say: say, shot: shot, pause: pause,
                                             expect: expect)
-            await shot("01-main-window.png")
 
             // --- Selection drives the toolbar -----------------------------------------------
             model.selectedDeviceIds = Set(model.rows.map(\.deviceId))

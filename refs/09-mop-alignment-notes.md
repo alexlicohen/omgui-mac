@@ -86,13 +86,19 @@ Consequences taken:
 
 ## Evidence
 
-`.build/release/OmGui --mock --self-test` prints 18 `CHECK` lines and exits non-zero if any fails
+`.build/release/OmGui --mock --self-test` prints 19 `CHECK` lines and exits non-zero if any fails
 (`Sources/OmGui/SelfTest+Mop.swift`); the transcript is
 `refs/screenshots/self-test-transcript.txt`. The window-dependent claims — the title bar text, the
 "Default" header as the outline view actually draws it, the Device column fit, the Record rule as
 the toolbar renders it, and that every SF Symbol resolves on this OS — are asserted there rather
 than in `swift test`, which has no window. The rest is `Tests/OmGuiTests/MopAlignmentTests.swift`
 (15 cases).
+
+`refs/screenshots/01-main-window.png` is shot once, *before* `captureSopImages` configures a
+recording on 6036222 (session 1042) -- an earlier re-shot after that step overwrote the frame, so
+the reference window disagreed with both the MOP's row and `docs/sop-images/sop-01-main-window.png`.
+The MOP row (`6036222 | 0 | 93% | | Stopped`) is now asserted at the moment the frame is captured,
+so the ordering cannot regress silently.
 
 The SOP screenshots are the self-test's own captures, flattened onto white (the captures carry an
 alpha channel) and, for `sop-04`, overlaid with the MOP's 1–4 callouts. Both steps are one Pillow

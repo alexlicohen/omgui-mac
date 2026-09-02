@@ -1,5 +1,5 @@
 SELF-TEST: backend = mock
-SELF-TEST: menu: View{}  Window{- | Open Movement [V1.0.0] - /var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace}  Help{}
+SELF-TEST: menu: File{Choose Working Folder... | Open Working Folder | Recent Folders() | - | Export Resampled WAV... | Export Resampled CSV... | Export Raw CSV... | - | Exit}  Edit{Cut | Copy | Paste | - | Select All}  View{Toolbar | Status Bar | Preview | Device Properties | File Properties | Log}  Tools{Calculate SVM... | Calculate Cut Points... | Calculate Wear Time... | Calculate Sleep Time... | - | Plugins... | - | Options...}  Help{About...}
 SELF-TEST: defaults: workspace /var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace, mock root /var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/mock
 SELF-TEST: devices: 6036222 [Outbox] battery=- recording=Stopped | 6036223 [Devices] battery=- recording=Stopped (with data) | 6036224 [Outbox] battery=- recording=Stopped
 SELF-TEST: splits: H[537]=537/collapsed H[537]=218/318 V[1056]=747/308 H[318]=89/228 V[1056]=738/317
@@ -17,6 +17,8 @@ SELF-TEST: CHECK ok: the Device column is wide enough for a 7-digit ID
 SELF-TEST: toolbar icons: Download=square.and.arrow.down Cancel=xmark.circle Clear=eraser.fill Record...=circle.fill Stop=stop.fill Identify=lightbulb.fill Export=square.and.arrow.up SVM...=function Cut Points...=person.fill Wear Time...=clock.fill Sleep Analysis...=moon.zzz.fill Plugins...=puzzlepiece.extension.fill
 SELF-TEST: CHECK ok: every toolbar icon resolves (missing: )
 SELF-TEST: CHECK ok: Clear has the eraser icon the MOP names
+SELF-TEST: MOP reference row: 6036222 | 0 | 93% |  | Stopped
+SELF-TEST: CHECK ok: the reference frame shows the MOP's row: 6036222 | 0 | 93% | | Stopped
 SELF-TEST: captured sop-01-main-window.png
 SELF-TEST: MOP device row: 6036222 | 0 | 93% |  | Stopped
 SELF-TEST: CHECK ok: the MOP device reads "Stopped"
@@ -34,10 +36,9 @@ SELF-TEST: warnings: WARNINGS / • A gyro-enabled device is being configured fo
 SELF-TEST: CHECK ok: the gyro-disabled warning is shown verbatim
 SELF-TEST: captured sop-04-recording-settings.png
 SELF-TEST: captured sop-05-record-confirmed.png
-SELF-TEST: status bar: Recording configured on 6036222: session 1042, 2026-09-02 19:17:31
+SELF-TEST: status bar: Recording configured on 6036222: session 1042, 2026-09-02 19:38:05
 SELF-TEST: CHECK ok: the Log pane carries "Recording configured on <id>: session <n>, <date time>"
 SELF-TEST: CHECK ok: the status bar carries the same line
-SELF-TEST: captured 01-main-window.png
 SELF-TEST: select all -> toolbar download=false clear=false record=false stop=false identify=true
 SELF-TEST: captured 02-all-selected.png
 SELF-TEST: identify: LED indices now [1, 1, 1]
@@ -48,9 +49,9 @@ SELF-TEST: cancel: Download column reached 'Cancelled' = true
 SELF-TEST: download completed
 SELF-TEST: prompt confirm [Overwrite File?] File already exists:      /var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/workspace/6036223_0000000001.cwa  Overwrite existing file? -> OK
 SELF-TEST: re-download over the existing file completed
-SELF-TEST: workspace data files: 6036223_0000000001.cwa 0.01 MB 02/09/26 19:17:37
+SELF-TEST: workspace data files: 6036223_0000000001.cwa 0.01 MB 02/09/26 19:38:10
 SELF-TEST: captured 04-downloaded.png
-SELF-TEST: file properties: Device ID=6036223 Session ID=0000000001 Sampling Rate=100 Sampling Range=16 Time Start=2026-09-02 19:17:03 Time End=2026-09-02 19:17:22
+SELF-TEST: file properties: Device ID=6036223 Session ID=0000000001 Sampling Rate=100 Sampling Range=16 Time Start=2026-09-02 19:37:36 Time End=2026-09-02 19:37:55
 SELF-TEST: captured 05-file-properties.png
 SELF-TEST: record dialog for 6036222: gyro=true rateRange='non-standard' ok=true
 SELF-TEST: warnings: WARNINGS / • A gyro-enabled device is being configured for accelerometer data only (no gyro data). / 
@@ -69,7 +70,7 @@ SELF-TEST: output files: 1
 SELF-TEST: captured 10-output-files.png
 SELF-TEST: splits with the log open: H[537]=416/120 H[416]=218/197 V[1056]=747/308 H[197]=40/156 V[1056]=738/317
 SELF-TEST: captured 11-log-pane.png
-SELF-TEST: synthetic preview: viewer-preview.cwa 26.2 MB, 48.0 h, written in 0.11 s
+SELF-TEST: synthetic preview: viewer-preview.cwa 26.2 MB, 48.0 h, written in 0.12 s
 SELF-TEST: opened viewer-preview.cwa: 53625 blocks, 48.0 h, base bucket 1 s, levels 1/10/60/600/3600, 15856 KB of buckets
 SELF-TEST: captured 14-viewer-file.png
 SELF-TEST: all twelve channels on: X-Axis Y-Axis Z-Axis ±1g Light Temp. Batt.% Batt.V Time Gyro-X Gyro-Y Gyro-Z
@@ -88,8 +89,8 @@ SELF-TEST: selection binding: 2026-08-31 08:24:00.000 .. 2026-08-31 20:24:00.000
 SELF-TEST: captured 14-viewer-selection.png
 SELF-TEST: after dragging the end marker: 1152.0 min
 SELF-TEST: right-click in Selection mode cleared the selection: true
-SELF-TEST: redraw (mean/worst of 20, plot 959x40 pt): full extent 3.4/3.7 ms recompose, 0.24/0.28 ms cached; 1 hour 2.7/3.0 ms recompose, 0.23/0.26 ms cached; 1 minute 2.9/3.3 ms recompose, 0.24/0.29 ms cached -- 60 fps is 16.7 ms
-SELF-TEST: redraw with the preview pane dragged to 959x460 pt: 3.4 ms worst
+SELF-TEST: redraw (mean/worst of 20, plot 959x40 pt): full extent 3.4/3.6 ms recompose, 0.24/0.26 ms cached; 1 hour 4.0/7.9 ms recompose, 0.37/1.01 ms cached; 1 minute 3.9/8.2 ms recompose, 0.33/0.94 ms cached -- 60 fps is 16.7 ms
+SELF-TEST: redraw with the preview pane dragged to 959x460 pt: 3.2 ms worst
 SELF-TEST: device 6036222: 0.9 MB of data at /var/folders/c1/kdf_8q1x6rx_v90cy9gyql2r0000gn/T/omgui-self-test/mock/AX617_6036222/CWA-DATA.CWA
 SELF-TEST: device preview: 1875 blocks, 2.0 h, opened the device's own file
 SELF-TEST: captured 14-viewer-device.png

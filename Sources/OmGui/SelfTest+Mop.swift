@@ -99,6 +99,21 @@ extension SelfTest {
         say("toolbar icons: " + ToolbarIcon.all.map { "\($0.0)=\($0.1.symbol)" }.joined(separator: " "))
         expect(missing.isEmpty, "every toolbar icon resolves (missing: \(missing.joined(separator: ", ")))")
         expect(ToolbarIcon.clear.symbol == "eraser.fill", "Clear has the eraser icon the MOP names")
+
+        // 9. The reference frame `refs/screenshots/01-main-window.png` is shot immediately before
+        // this runs, so the MOP's own row has to still read as the MOP prints it here. Asserted
+        // because a second `shot("01-main-window.png")` placed after `captureSopImages` once
+        // overwrote that frame with the post-Record state (session 1042).
+        if let mopRow = model.rows.first(where: { $0.deviceId == MockDeviceCatalog.mopDeviceId }) {
+            let row = [mopRow.deviceText, mopRow.sessionText, mopRow.batteryText,
+                       mopRow.downloadText, mopRow.recordingText].joined(separator: " | ")
+            say("MOP reference row: \(row)")
+            expect(mopRow.sessionText == "0" && mopRow.batteryText == "93%"
+                   && mopRow.downloadText.isEmpty && mopRow.recordingText == "Stopped",
+                   "the reference frame shows the MOP's row: 6036222 | 0 | 93% | | Stopped")
+        } else {
+            expect(false, "the MOP's device is in the list when the reference frame is shot")
+        }
     }
 
     /// The screenshots `docs/SOP-mac.md` embeds, captured from the real window before anything
