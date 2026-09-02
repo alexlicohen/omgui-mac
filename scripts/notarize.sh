@@ -26,7 +26,7 @@ fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 [[ -d "$APP" ]] || fail "$APP not found — run scripts/build-app.sh first"
 
-SIGNING_AUTH="$(codesign -dv "$APP" 2>&1 | sed -n 's/^Authority=//p' | head -1)"
+SIGNING_AUTH="$(codesign -dvv "$APP" 2>&1 | sed -n 's/^Authority=//p' | head -1)"
 if [[ -z "$SIGNING_AUTH" || "$SIGNING_AUTH" == "-" ]]; then
     fail "$APP is ad-hoc signed. Notarization needs a Developer ID Application signature — rebuild with scripts/build-app.sh (no --adhoc)."
 fi
