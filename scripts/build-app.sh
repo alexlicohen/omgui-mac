@@ -63,6 +63,12 @@ cp "$HELPERS_DIR/omconvert" "$APP/Contents/Helpers/omconvert"
 cp "$HELPERS_DIR/cwa-convert" "$APP/Contents/Helpers/cwa-convert"
 cp "$RESOURCES/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
+# Bundled plugins (phase 3b): the plugin folder OmGui defaults to.
+if [[ -d "$RESOURCES/Plugins" ]]; then
+    cp -R "$RESOURCES/Plugins" "$APP/Contents/Resources/Plugins"
+    find "$APP/Contents/Resources/Plugins" -name '*.sh' -exec chmod +x {} +
+fi
+
 sed -e "s/@VERSION@/$VERSION/" -e "s/@BUILD@/$BUILD_NUMBER/" \
     "$RESOURCES/Info.plist.in" > "$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null || fail "rendered Info.plist failed lint"
