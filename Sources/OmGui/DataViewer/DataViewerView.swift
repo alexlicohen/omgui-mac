@@ -1,5 +1,7 @@
+import AppKit
 import Foundation
 import OmApi
+import OmGuiCore
 import SwiftUI
 
 /// What the preview is showing (`DataViewer.Open(filename)` / `DataViewer.Open(deviceId)`).
@@ -24,12 +26,21 @@ enum DataViewerSource: Identifiable {
         }
     }
 
-    /// The path a phase-3 plot would read.
+    /// The file the plot reads.
+    ///
+    /// Upstream's `OmReader.Open(deviceId)` calls `OmReaderOpenDeviceData`, which this build of
+    /// libomapi does not export; the device's mounted `CWA-DATA.CWA` is the same bytes, and is
+    /// what `OmDevice.dataFilePath` already points at.
     var path: String {
         switch self {
         case .file(let url): return url.path
         case .device(let device): return device.dataFilePath
         }
+    }
+
+    var device: OmDevice? {
+        if case .device(let device) = self { return device }
+        return nil
     }
 }
 
@@ -54,23 +65,31 @@ enum DataChannel: String, CaseIterable, Identifiable, Hashable {
     /// X, Y and Z start checked (`DataViewer.Designer.cs`).
     static let defaultChannels: Set<DataChannel> = [.x, .y, .z]
 
-    /// The pen colours `DataViewer.cs` draws each channel with (alpha 0x60 in the plot itself).
-    var penColor: Color {
+    /// The pen `DataViewer.OnPaint` draws this channel with: the `System.Drawing` colour named in
+    /// `refs/03 §6` at alpha 96, which is what makes overlapping channels read as a blend.
+    ///
+    /// `±1g` and `Time` are not data channels — `±1g` adds the two dotted guide lines at ±1 g and
+    /// `Time` switches on the per-hour background banding — so their colours are the ones those
+    /// decorations use.
+    var plotColor: NSColor {
         switch self {
-        case .x: return .red
-        case .y: return .green
-        case .z: return .blue
-        case .gyroX: return .cyan
-        case .gyroY: return Color(red: 1, green: 0, blue: 1)
-        case .gyroZ: return .yellow
-        case .svm: return .black
-        case .light: return Color(red: 0.65, green: 0.16, blue: 0.16)
-        case .temperature: return Color(red: 0.55, green: 0, blue: 0.55)
-        case .batteryPercent: return Color(red: 0, green: 0.55, blue: 0.55)
-        case .batteryVolts: return Color(red: 0.88, green: 1, blue: 1)
-        case .time: return .gray
+        case .x: return Palette.rgb(255, 0, 0, alpha: 96)                 // Red
+        case .y: return Palette.rgb(0, 128, 0, alpha: 96)                 // Green
+        case .z: return Palette.rgb(0, 0, 255, alpha: 96)                 // Blue
+        case .gyroX: return Palette.rgb(0, 255, 255, alpha: 96)           // Cyan
+        case .gyroY: return Palette.rgb(255, 0, 255, alpha: 96)           // Magenta
+        case .gyroZ: return Palette.rgb(255, 255, 0, alpha: 96)           // Yellow
+        case .svm: return Palette.rgb(0, 0, 0, alpha: 96)                 // Black
+        case .light: return Palette.rgb(165, 42, 42, alpha: 96)           // Brown
+        case .temperature: return Palette.rgb(139, 0, 139, alpha: 96)     // DarkMagenta
+        case .batteryPercent: return Palette.rgb(0, 139, 139, alpha: 96)  // DarkCyan
+        case .batteryVolts: return Palette.rgb(224, 255, 255, alpha: 96)  // LightCyan
+        case .time: return Palette.gray
         }
     }
+
+    /// The same colours for SwiftUI.
+    var penColor: Color { Color(nsColor: plotColor.withAlphaComponent(1)) }
 }
 
 /// `DataViewer.Mode`.
@@ -80,18 +99,19 @@ enum DataViewerMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-/// The preview pane.
+/// The preview pane — `DataViewer` minus the options box, which the main window owns in this port.
 ///
-/// Phase 2 owns the plumbing only: selecting a device or a file opens the source here exactly as
-/// `dataViewer.Open` does, and the channel check boxes and Zoom/Selection buttons drive this view's
-/// inputs. The plot itself is phase 3, so this renders the light-grey background OMGUI's viewer
-/// uses plus the name of the open source.
+/// The signature is the one phase 2 agreed on: the host passes the open source, the channel check
+/// boxes, the Zoom/Selection mode and a binding for the selected slice, and everything else lives
+/// in here.
 struct DataViewerView: View {
 
     let source: DataViewerSource?
     let channels: Set<DataChannel>
     let mode: DataViewerMode
     @Binding var selection: ClosedRange<Date>?
+
+    @StateObject private var model = DataViewerModel()
 
     init(source: DataViewerSource?,
          channels: Set<DataChannel>,
@@ -103,28 +123,62 @@ struct DataViewerView: View {
         self._selection = selection
     }
 
-    /// `DataViewer` paints its background `Color.LightGray`.
-    private static let background = Color(red: 0.827, green: 0.827, blue: 0.827)
-
     var body: some View {
-        ZStack {
-            Self.background
-            if let source {
-                VStack(spacing: 2) {
-                    Text(source.displayName)
-                        .font(.system(size: 11, weight: .semibold))
-                    Text("Plot rendering arrives in phase 3 \u{2014} \(mode.rawValue) mode, \(channelSummary)")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(4)
-            }
-        }
-        .accessibilityIdentifier("DataViewer")
+        DataPlot(model: model,
+                 channels: channels,
+                 mode: mode,
+                 device: source?.device,
+                 selection: $selection)
+            .accessibilityIdentifier("DataViewer")
+            .onAppear { sync() }
+            .onChange(of: source?.id) { _, _ in sync() }
     }
 
-    private var channelSummary: String {
-        let enabled = DataChannel.allCases.filter { channels.contains($0) }.map(\.title)
-        return enabled.isEmpty ? "no channels" : enabled.joined(separator: " ")
+    /// `dataViewer.Open(...)` / `Close()`.
+    private func sync() {
+        DataViewerRegistry.shared.model = model
+        guard let source else {
+            model.close()
+            return
+        }
+        model.open(path: source.path)
     }
+}
+
+/// Hosts the AppKit plot. `@ObservedObject` is what drives the redraw: the model bumps `revision`
+/// every time a batch of blocks lands, so the picture fills in while the file is still loading.
+private struct DataPlot: NSViewRepresentable {
+
+    @ObservedObject var model: DataViewerModel
+    let channels: Set<DataChannel>
+    let mode: DataViewerMode
+    let device: OmDevice?
+    @Binding var selection: ClosedRange<Date>?
+
+    func makeNSView(context: Context) -> DataPlotView {
+        let view = DataPlotView(frame: .zero)
+        DataViewerRegistry.shared.plot = view
+        return view
+    }
+
+    func updateNSView(_ view: DataPlotView, context: Context) {
+        view.model = model
+        view.channels = channels
+        view.mode = mode
+        view.device = device
+        view.onSelectionChanged = { range in
+            // A user gesture, not a view update: safe to write straight back to the binding.
+            selection = range
+        }
+        view.modelChanged()
+    }
+}
+
+/// The running plot and its model, so `--self-test` can drive the real view rather than a copy of
+/// its logic. Nothing else reads this.
+@MainActor
+final class DataViewerRegistry {
+    static let shared = DataViewerRegistry()
+    weak var plot: DataPlotView?
+    weak var model: DataViewerModel?
 }
