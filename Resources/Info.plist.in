@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>OmGui</string>
+	<key>CFBundleDisplayName</key>
+	<string>OmGui</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.alexlicohen.omgui</string>
+	<key>CFBundleExecutable</key>
+	<string>OmGui</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@BUILD@</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>omgui-mac is a native macOS port of Axivity OMGUI, © Newcastle University / Open Movement (BSD 2-clause). Port © Alex Cohen, same licence.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>OmGui reads the recording file on an attached AX3/AX6 device.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>MacOSX</string>
+	</array>
+	<key>LSArchitecturePriority</key>
+	<array>
+		<string>arm64</string>
+	</array>
+</dict>
+</plist>

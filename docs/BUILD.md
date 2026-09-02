@@ -75,3 +75,16 @@ build/helpers/cwa-convert
 ```
 
 `build/` is gitignored. A later phase copies `build/helpers/` into `OmGui.app/Contents/Helpers`.
+
+## App bundle
+
+```sh
+scripts/build-app.sh [--adhoc] [--version X.Y.Z]   # dist/OmGui.app
+scripts/build-dmg.sh [--adhoc]                     # dist/OmGui-<version>.dmg
+scripts/notarize.sh                                # notarize + staple (needs Developer ID build)
+```
+
+`build-app.sh` builds the `OmGui` executable, runs `build-helpers.sh`, and assembles the bundle
+from `Resources/` (icon, `Info.plist.in` template, entitlements), signing with a Developer ID
+Application identity when one is installed and ad-hoc otherwise. `dist/` is gitignored. See
+[`docs/RELEASE.md`](RELEASE.md) for the full release process.
