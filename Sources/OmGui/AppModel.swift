@@ -39,6 +39,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var filePropertyRows: [PropertyRow] = []
     @Published private(set) var recentFolders: [String] = []
     @Published var showAllFiles = false
+    /// `tabControlFiles.SelectedIndex` — 0 Data Files, 1 Plugin Queue, 2 Output Files.
+    @Published var filesTab = 0
 
     /// The Data Files toolbar is only live while a file is selected (`FilesResetToolStripButtons`).
     var fileToolbarEnabled: Bool { !selectedFilePaths.isEmpty }

@@ -5,8 +5,9 @@ import SwiftUI
 
 /// The main window (`MainForm.Designer.cs`).
 ///
-/// Split proportions, column widths and control order follow the designer file; the split panes
-/// are `HSplitView`/`VSplitView`, which behave like WinForms `SplitContainer`s.
+/// Split proportions, column widths and control order follow the designer file; every splitter is
+/// a `SplitPaneView` (an `NSSplitView`), which is the only way to open a pane at the designer's
+/// exact `SplitterDistance` and still let the user drag it.
 struct ContentView: View {
 
     @EnvironmentObject var model: AppModel
@@ -28,13 +29,22 @@ struct ContentView: View {
                 DeviceToolbar()
                 Divider()
             }
-            VSplitView {
-                mainArea
-                    .frame(minHeight: 200, idealHeight: ContentView.contentHeight, maxHeight: .infinity)
-                if model.showLog {
-                    LogPane()
-                        .frame(minHeight: 40, idealHeight: 120, maxHeight: .infinity)
-                }
+            // `splitContainerLog` / `splitContainerPreview` / `splitContainerDevices` /
+            // `splitContainer1`, with the designer's 562 / 218 / 747 / 89 distances.
+            MainSplitView(showDeviceProperties: model.showDeviceProperties,
+                          showPreview: model.showPreview,
+                          showLog: model.showLog) {
+                GroupedTableView(columns: DeviceColumns.all,
+                                 sections: deviceSections,
+                                 selection: deviceSelectionBinding)
+            } deviceProperties: {
+                PropertyGridView(title: "Device", rows: model.devicePropertyRows)
+            } preview: {
+                previewPane.environmentObject(model)
+            } files: {
+                filesPane.environmentObject(model)
+            } log: {
+                LogPane().environmentObject(model)
             }
             if model.showStatusBar {
                 Divider()
@@ -54,36 +64,6 @@ struct ContentView: View {
         }
         .sheet(item: $model.progressSheet) { context in
             ProgressSheet(context: context).environmentObject(model)
-        }
-    }
-
-    private var mainArea: some View {
-        VSplitView {
-            devicesPane
-                .frame(minHeight: 80, idealHeight: ContentView.devicesHeight, maxHeight: .infinity)
-            // View > Preview. Upstream collapses `splitContainerPreview.Panel1`, which is the
-            // *device* pane rather than the preview -- see refs/05-phase2-notes.md.
-            if model.showPreview {
-                previewPane
-                    .frame(minHeight: 40, idealHeight: ContentView.previewHeight, maxHeight: .infinity)
-            }
-            filesPane
-                .frame(minHeight: 120, idealHeight: 255, maxHeight: .infinity)
-        }
-    }
-
-    // MARK: - Devices
-
-    private var devicesPane: some View {
-        HSplitView {
-            GroupedTableView(columns: DeviceColumns.all,
-                             sections: deviceSections,
-                             selection: deviceSelectionBinding)
-                .frame(minWidth: 320, idealWidth: ContentView.devicesTableWidth, maxWidth: .infinity)
-            if model.showDeviceProperties {
-                PropertyGridView(title: "Device", rows: model.devicePropertyRows)
-                    .frame(minWidth: 140, idealWidth: 300, maxWidth: .infinity)
-            }
         }
     }
 
@@ -257,15 +237,54 @@ struct WorkspaceBar: View {
 /// `tabControlFiles`.
 struct FilesTabView: View {
     @EnvironmentObject var model: AppModel
-    @State private var tab = 0
+
+    private var tab: Int { model.filesTab }
 
     var body: some View {
-        TabView(selection: $tab) {
-            dataFilesTab.tabItem { Text("Data Files") }.tag(0)
-            pluginQueueTab.tabItem { Text("Plugin Queue") }.tag(1)
-            outputFilesTab.tabItem { Text("Output Files") }.tag(2)
+        VStack(spacing: 0) {
+            // `tabControlFiles` — a WinForms `TabControl` draws its tabs left-aligned along the top
+            // edge, which SwiftUI's centre-aligned `TabView` does not do (and which does not render
+            // its strip at all inside an `NSHostingView`).
+            HStack(spacing: 2) {
+                tabButton("Data Files", 0)
+                tabButton("Plugin Queue", 1)
+                tabButton("Output Files", 2)
+                Spacer()
+            }
+            .padding(.horizontal, 4)
+            .padding(.top, 3)
+            Divider()
+            Group {
+                switch tab {
+                case 1: pluginQueueTab
+                case 2: outputFilesTab
+                default: dataFilesTab
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .padding(4)
+    }
+
+    private func tabButton(_ title: String, _ index: Int) -> some View {
+        let selected = tab == index
+        return Button { model.filesTab = index } label: {
+            Text(title)
+                .font(.system(size: 11))
+                .foregroundStyle(selected ? Color.primary : Color.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 3)
+                .background(
+                    UnevenRoundedRectangle(topLeadingRadius: 4, topTrailingRadius: 4)
+                        .fill(selected ? Color(nsColor: .controlBackgroundColor)
+                                       : Color(nsColor: .windowBackgroundColor))
+                )
+                .overlay(
+                    UnevenRoundedRectangle(topLeadingRadius: 4, topTrailingRadius: 4)
+                        .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("tab.\(index)")
     }
 
     // MARK: Data Files
@@ -294,16 +313,19 @@ struct FilesTabView: View {
             .controlSize(.small)
             .padding(.vertical, 4)
 
-            HSplitView {
+            // `splitContainerFileProperties` (Vertical, FixedPanel=Panel2, dist 738).
+            SplitPaneView(.vertical,
+                          distance: ContentView.filesTableWidth,
+                          fixedPanel: .panel2,
+                          panel1Minimum: 200,
+                          panel2Minimum: 100,
+                          panel2Collapsed: !model.showFileProperties) {
                 GroupedTableView(columns: FileColumns.data,
                                  sections: [GridSection(id: "files", title: "", rows: model.dataFiles.map(FileColumns.row))],
                                  selection: Binding(get: { model.selectedFilePaths },
                                                     set: { model.selectedFilePaths = $0; model.fileSelectionChanged() }))
-                    .frame(minWidth: 260, idealWidth: ContentView.filesTableWidth, maxWidth: .infinity)
-                if model.showFileProperties {
-                    PropertyGridView(title: "File", rows: model.filePropertyRows)
-                        .frame(minWidth: 140, idealWidth: 280, maxWidth: .infinity)
-                }
+            } panel2: {
+                PropertyGridView(title: "File", rows: model.filePropertyRows)
             }
         }
     }
