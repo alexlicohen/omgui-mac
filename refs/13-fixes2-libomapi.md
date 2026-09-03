@@ -18,6 +18,7 @@ Everything else is a consequence:
 | IOKit removal callback | stores `OM_DEVICE_REMOVED` (atomic), then `OmDownloadRequestCancel()`. **No join.** | It runs on the discovery run-loop thread. A join there stops attach/detach delivery *and* `CFRunLoopStop()` processing, so a quit could not stop discovery at all (H1/H2). |
 | `OmShutdown()` | cancels every device, then `OmDownloadJoinBounded()` per device; frees a state only when that returns non-zero; skips both `mutex_destroy()` calls if anything leaked | The one authoritative join, and it must not be able to hang `@MainActor` (H1/H3). |
 | `OmDeviceDiscoveryStop()` detach path | nulls the device/download/chunk/log callbacks, clears `gRunLoop`, sets `gDiscoveryDetached`, keeps the notify port and the `DeviceData` registry | The orphan can still walk the device table and call back into a Swift object the caller is about to release (H4). |
+| `OmCancelDownload()` | `OmDownloadRequestCancel()` then `OmDownloadJoinBounded()`; `OM_E_ABORT` if the thread misses the budget | It is the *other* main-thread join. `@MainActor AppModel.cancelDownload()` reaches it, and upstream's `OmWaitForDownload()` has no bound, so H3's beachball was one button away from the one the review found on Cmd-Q. |
 | `OmBeginDownloadingReference()` | reaps a finished-but-unjoined thread before starting a new one; refuses if the old one is still running | Otherwise `thread_create` overwrites — and permanently leaks — a joinable handle on every unplug/replug (H1). |
 
 Two supporting decisions worth keeping in mind:
@@ -33,6 +34,11 @@ Two supporting decisions worth keeping in mind:
   reading `downloadSource` from another thread safe at all.
 
 ## Deliberate non-goals
+
+- **`OmCancelDownload()`'s new `OM_E_ABORT` is currently swallowed.** `LibOmapiBackend.cancelDownload()`
+  throws on it, but `OmDevice.cancelDownload()` is a `try?`, so a cancellation the C layer could not
+  complete inside 2 s is invisible in the UI. Surfacing it belongs in `Sources/OmApi`, which this
+  pass does not own. The C-layer behaviour is the point either way: the main thread comes back.
 
 - **M1** is fixed by the review's own fallback, not its first suggestion: `gStartMutex`/`gStartCond`
   are statically initialised and never re-initialised, and `OmDeviceDiscoveryStart()` refuses to
@@ -66,6 +72,7 @@ the loop and finished in 9 ms without ever reading. The chunk callback has no su
 | `testACompletedDownloadClosesBothStreamsAndPublishesFinished` | the epilogue's ordering: by the time `downloadFinished` is visible, the streams are closed, the destination is flushed and the status is `COMPLETE` |
 | `testCancellingMidCopyEndsTheDownloadCancelledAndReleasesTheState` | the copy loop observes `downloadCancel` and ends `CANCELLED` |
 | `testASecondDownloadReapsTheFirstThreadRatherThanOverwritingItsHandle` | a finished-but-unjoined thread stays `downloadThreadActive` until reaped, and reaping twice is a no-op |
+| `testCancelDownloadIsBoundedAndReportsAThreadThatHasNotStopped` | `OmCancelDownload()` returns `OM_E_ABORT` on its budget rather than blocking on a parked thread, and the cancel it requested is the one the copy loop observes |
 | `LibOmapiDiscoveryLifecycleTests.testRepeatedStartupAndShutdownCyclesComplete` | two real `OmStartup()`/`OmShutdown()` cycles complete (M1's re-init, C17's bounded stop, L1's release order). Starts real IOKit matching, but needs no device attached and passes either way |
 
 ## What only hardware can test
@@ -89,5 +96,11 @@ substitute for them. Run each with `OMDEBUG=2` and keep the log.
    ~8 s window). This is the H4 detach path. Expect `WARNING: Device discovery thread did not stop;
    detaching it.` followed by `OmShutdown()` returning without a crash, and no callback into the
    app after that line.
-5. **Attach/detach 20 times with the app open**, then check `leaks`/`heap` for `DeviceData` growth
+5. **Unplug mid-download, then hit Cancel** *before* the device row disappears (the window in
+   which IOKit has not yet delivered `kIOMessageServiceIsTerminated`, so the device still reads
+   CONNECTED). This is the `OmCancelDownload()` bound. Expect the button to return immediately and
+   the row to stay responsive; a `WARNING: Download thread for device ... did not stop in 2000 ms`
+   line means the read outlived the budget and the thread was detached — still correct, and still
+   not a beachball.
+6. **Attach/detach 20 times with the app open**, then check `leaks`/`heap` for `DeviceData` growth
    (L1) and for `OmDeviceState` growth (H1).

@@ -216,6 +216,45 @@ final class LibOmapiDownloadProtocolTests: XCTestCase {
         XCTAssertEqual(omTestDownloadThreadActive(device), 0)
     }
 
+    // MARK: - H2/H3: the Cancel button's join is bounded too
+
+    /// `OmCancelDownload` is the *other* main-thread join -- OmGui calls it from
+    /// `@MainActor AppModel.cancelDownload()`. Upstream raised the cancel flag outside
+    /// `om.downloadMutex` and then waited on the thread with no bound, which is H3's failure
+    /// reached through the Cancel button rather than through Cmd-Q: in the window between a device
+    /// being yanked and IOKit delivering `kIOMessageServiceIsTerminated` the download thread is
+    /// parked in `fread()` on a volume that is gone, and the main thread blocked until the kernel
+    /// timed the read out. It must come back on its budget and report that the thread has not
+    /// stopped.
+    func testCancelDownloadIsBoundedAndReportsAThreadThatHasNotStopped() throws {
+        let sourceFd = try makeSourceFile("cancel-bounded.bin", blocks: 512)
+        let device = try makeDevice(900_005, sourceFd: sourceFd,
+                                    destination: destinationPath("cancel-bounded.cwa"), blocks: 512)
+
+        _ = OmSetDownloadChunkCallback({ _, _, _, _, _ in
+            downloadGateEntered.signal()
+            downloadGate.wait()
+        }, nil)
+
+        XCTAssertEqual(omTestDownloadStart(device), omOK)
+        XCTAssertEqual(downloadGateEntered.wait(timeout: .now() + 5.0), .success,
+                       "the download thread never reached the chunk callback")
+
+        let started = Date()
+        XCTAssertEqual(OmCancelDownload(900_005), OM_E_ABORT,
+                       "OmCancelDownload declared a parked thread stopped")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10.0,
+                          "OmCancelDownload was not bounded -- on the main thread that is a beachball")
+
+        // Releasing the thread lets its epilogue run; only then does the state become reapable.
+        downloadGate.signal()
+        XCTAssertEqual(omDownloadWaitFinished(device, 5000), 1,
+                       "the thread never published downloadFinished")
+        XCTAssertEqual(omTestDownloadStatus(device), OM_DOWNLOAD_CANCELLED.rawValue,
+                       "the copy loop did not observe the cancel OmCancelDownload requested")
+        XCTAssertEqual(omTestDownloadStreamsClosed(device), 1)
+    }
+
     // MARK: - H1: a cancelled-but-unjoined thread is reaped by the next download, not leaked
 
     /// The removal path deliberately leaves the thread running. Whoever comes next has to collect

@@ -500,6 +500,27 @@ int OmWaitForDownload(int deviceId, OM_DOWNLOAD_STATUS *downloadStatus, int *dow
 }
 
 
+/* PATCH (omgui-mac) H2/H3: the second main-thread join, bounded the same way OmShutdown()'s is.
+ *
+ * Upstream raised downloadCancel outside om.downloadMutex and then called OmWaitForDownload(),
+ * whose join has no bound.  That is H3's failure exactly, reached through the Cancel button rather
+ * than through Cmd-Q: OmGui calls this from `@MainActor AppModel.cancelDownload()`, and in the
+ * window between a device being yanked and IOKit delivering kIOMessageServiceIsTerminated the
+ * download thread is parked in fread() on a volume that is no longer there, so the main thread
+ * blocked until the kernel timed the read out.  Bounding OmShutdown() alone would have left the
+ * same unbounded join one button away.
+ *
+ * So this runs the same two steps the removal callback and the shutdown run: request cancellation
+ * (which raises the flag under om.downloadMutex *and* invalidates the source descriptor, so a
+ * blocked read comes back), then reap on a budget.  A thread that misses the budget is detached
+ * rather than waited on; its state stays alive and downloadThreadActive stays up, so the next
+ * OmBeginDownloading() for the device refuses rather than starting a second thread over it, and
+ * OmShutdown() still gets its own chance to reap it.  OM_E_ABORT says just that: the cancellation
+ * was delivered, the thread has not stopped yet.
+ *
+ * Note this no longer answers OM_E_INVALID_DEVICE for a device that has already gone: cancelling
+ * the download of a device that was just unplugged is exactly when the call has to work.
+ */
 int OmCancelDownload(int deviceId)
 {
     // Check system and device state
@@ -507,11 +528,9 @@ int OmCancelDownload(int deviceId)
 	OmDeviceState *device = OmDevice(deviceId);
 	if (device == NULL) return OM_E_INVALID_DEVICE;   // Device never seen
 
-    // Set signal for download to cancel
-    device->downloadCancel = 1;
-
-    // Wait for the download to stop (or return immediately if not in progress)
-    return OmWaitForDownload(deviceId, NULL, NULL);
+    OmDownloadRequestCancel(device);
+    if (!OmDownloadJoinBounded(device, OM_DOWNLOAD_JOIN_TIMEOUT_MS)) { return OM_E_ABORT; }
+    return OM_OK;
 }
 
 
