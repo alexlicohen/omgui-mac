@@ -67,3 +67,20 @@ installed — `notarize-app.sh`/`notarize-dmg.sh` refuse to run against an ad-ho
    permission prompt (`NSRemovableVolumesUsageDescription`) — allow it. The first refresh of a
    Documents/Desktop/Downloads workspace shows the corresponding folder-access prompt — allow that
    too, or the Data Files tab renders empty with no error.
+
+## Notarization credentials (three options, checked in this order)
+
+The scripts never store anything. Set one of these in the shell that runs `scripts/release.sh`:
+
+1. **App Store Connect API key** (most reliable on a Mac whose keychain misbehaves): App Store Connect → Users and Access → Integrations → App Store Connect API → Team Keys → generate (Developer role), download the `.p8` once, keep it outside the repo.
+   `NOTARY_KEY=~/.private/notary/AuthKey_XXXXXXXXXX.p8 NOTARY_KEY_ID=XXXXXXXXXX NOTARY_ISSUER=<issuer-uuid>`
+2. **Apple ID + app-specific password** (nothing stored; the password is visible to `ps` during the upload):
+   `NOTARY_APPLE_ID=<apple-id> NOTARY_PASSWORD=<app-specific-password>` (team defaults to AR8KJ6ST6K; override with `NOTARY_TEAM_ID`)
+3. **Keychain profile** `omgui-notary` (or `NOTARY_PROFILE`), created with `xcrun notarytool store-credentials …` in Terminal.app.
+
+Example, from Terminal.app:
+
+```
+cd ~/projects/omgui-mac
+NOTARY_APPLE_ID=<apple-id> NOTARY_PASSWORD='<app-specific-password>' bash scripts/release.sh
+```

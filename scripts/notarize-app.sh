@@ -22,19 +22,15 @@ CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.."
 REPO_ROOT="$(pwd)"
 DIST="$REPO_ROOT/dist"
 APP="$DIST/OmGui.app"
-PROFILE="${NOTARY_PROFILE:-omgui-notary}"
 
 log() { printf '%s\n' "$*"; }
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 [[ -d "$APP" ]] || fail "$APP not found — run scripts/build-app.sh first"
 
-if ! xcrun notarytool history --keychain-profile "$PROFILE" >/dev/null 2>&1; then
-    fail "notarytool keychain profile '$PROFILE' not found or not usable.
-Run this from Terminal.app (not from inside Claude Code):
-  xcrun notarytool store-credentials $PROFILE --apple-id <apple-id> --team-id <team-id> --password <app-specific-password>
-See docs/RELEASE.md."
-fi
+# shellcheck source=scripts/lib-notary.sh
+source "$REPO_ROOT/scripts/lib-notary.sh"
+resolve_notary_auth || exit 1
 
 SIGNING_AUTH="$(codesign -dvv "$APP" 2>&1 | sed -n 's/^Authority=//p' | head -1)"
 [[ "$SIGNING_AUTH" == "Developer ID Application: "* ]] \
@@ -46,8 +42,8 @@ ZIP="$DIST/OmGui-notarize.zip"
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
 
-log "Submitting $APP (as $ZIP) to notarytool (profile: $PROFILE)"
-xcrun notarytool submit "$ZIP" --keychain-profile "$PROFILE" --wait
+log "Submitting $APP (as $ZIP) to notarytool ($NOTARY_AUTH_DESC)"
+xcrun notarytool submit "$ZIP" "${NOTARY_AUTH[@]}" --wait
 rm -f "$ZIP"
 
 log "Stapling $APP"

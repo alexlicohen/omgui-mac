@@ -2,14 +2,14 @@
 
 ## Context
 
-ARIA IMPACT sites must configure Axivity AX6 watches, download `CWA-DATA.CWA`, and clear devices. OMGUI is Windows-only. The 2026-07-15 DCC action (OMGUI not centralized in Lasso; Alex to evaluate a container) is still open as of 2026-08-28 and blocks Abby's wearable click-by-click MOP.
+ARIA IMPACT sites must configure Axivity AX6 watches, download `CWA-DATA.CWA`, and clear devices. OMGUI is Windows-only. The 2026-07-15 DCC action (OMGUI not centralized in Lasso; Alex to evaluate a container) is still open as of 2026-08-28 and blocks the CCC's wearable click-by-click MOP.
 
 Research (verified against openmovement sources, 2026-09-02):
 - **Containers can't do it**: no USB passthrough on macOS for Docker/Podman/Apptainer. **Wine/CrossOver**: OMGUI's WMI/SetupAPI device pairing isn't emulated; Rosetta 2 ends after macOS 27. **VM** (VMware Fusion free + Win11 ARM64): works but needs a Windows license, ~40 GB, admin. Documented fallback only.
 - **OMGUI = thin .NET 3.5 WinForms over `libomapi`** (BSD-2 C library) which already ships a **macOS backend** (`omapi-devicefinder-mac.c`: IOKit + DiskArbitration; devices appear as `/dev/cu.usbmodem*` + `/Volumes/AX*/CWA-DATA.CWA`, VID:PID `04d8:0057`). All analysis tools (SVM, cut points, wear time, sleep, WAV/CSV export) are `omconvert`, portable C in the same repo.
 - Full UI/feature inventory of OMGUI v45 was extracted from `MainForm.Designer.cs`, `DateRangeForm`, `MetaDataTools.cs`, `OptionsDialog`, `DataViewer`, plugin system, and the InnoSetup manifest. Summary below; the agent report is the spec and gets checked into `refs/`.
 
-Constraints from Alex: Apple Silicon only; everything local; a real Mac app (no Terminal); repo under `alexlicohen`; **functionality and appearance mirror OMGUI as closely as possible**; prototype first, then Abby tests with a real AX6. Paid Apple Developer account exists (team V9R6KQRWSD); Xcode 26.6 / Swift 6.3 installed.
+Constraints from Alex: Apple Silicon only; everything local; a real Mac app (no Terminal); repo under `alexlicohen`; **functionality and appearance mirror OMGUI as closely as possible**; prototype first, then the CCC tests with a real AX6. Paid Apple Developer account exists (team V9R6KQRWSD); Xcode 26.6 / Swift 6.3 installed.
 
 ## Architecture
 
@@ -61,13 +61,13 @@ Out of scope: firmware update, Windows driver setup, ARIA-specific presets (meta
 | 2 | Main window: devices table with groups/LED/colours, property grids, toolbar/menus, workspace + file tabs, log, status bar; Record dialog with full validation + metadata encoding; Download/Clear/Cancel/Identify batch flows; Options; filename template | builder (spec = Designer files) | mock-mode walkthrough matches the inventory item-for-item; metadata-encoding and filename-template unit tests |
 | 3 | DataViewer (file + live device preview, zoom/selection, channels, colours); Export Raw CSV; Tools via omconvert (`ProcessingForm`, Plugin Queue, Output Files); plugin descriptor loader + HTML host | deep-reasoner (DataViewer, CWA reader perf) + builder (export/tools) | 500 MB CWA scrolls smoothly; omconvert outputs byte-identical to Windows omconvert for a fixture file |
 | 4 | Signing/notarization scripts (Developer ID Application cert — Alex issues it once in Xcode → Accounts; notarytool keychain profile, never committed), hardened runtime, signed helper binaries, DMG; About; `docs/`; first release | builder | DMG installs by double-click on a second Mac with no Gatekeeper prompt; reviewer PASS on docs |
-| 5 | Hands-on with Abby's AX6: detect, Record (interval + immediate), 1-h recording, Download, header diff vs an OMGUI-produced `.cwa` (`cwa_metadata.py` both), Clear, Tools run | Alex + Abby | header/annotation bytes match OMGUI's for the same settings; device re-recordable after Clear |
+| 5 | Hands-on with the CCC's AX6: detect, Record (interval + immediate), 1-h recording, Download, header diff vs an OMGUI-produced `.cwa` (`cwa_metadata.py` both), Clear, Tools run | Alex + CCC | header/annotation bytes match OMGUI's for the same settings; device re-recordable after Clear |
 
 ## Distribution
 
 - **GitHub** `alexlicohen/omgui-mac`: tagged releases with notarized DMG; README + SOP. Windows sites keep OMGUI.
 - **Lasso**: not hosted there (2026-07-15 decision); SOP goes into the wearable MOP in Lasso's document system; the actigraphy CRF's Launch Pad upload references the `{DeviceId}_{SessionId}.cwa` naming.
-- **CCC**: `omgui-cli` for pre-provisioning the 10-kit shipments; sites use the app. Announce at the first DM meeting / office hours; Abby is first tester and MOP author.
+- **CCC**: `omgui-cli` for pre-provisioning the 10-kit shipments; sites use the app. Announce at the first DM meeting / office hours; the CCC is first tester and MOP author.
 
 ## Verification
 
@@ -77,7 +77,7 @@ Out of scope: firmware update, Windows driver setup, ARIA-specific presets (meta
 - Notarized DMG cold install on a second Mac (phase 4).
 - Real-device header diff vs OMGUI (phase 5) is the objective equivalence check.
 
-## Open items for Abby (needed before phase 5, not before build)
+## Open items for the CCC (needed before phase 5, not before build)
 
 - ARIA recording settings (Hz, ±g, gyro, immediate vs interval, duration) and which Study/Subject metadata fields sites fill in; a sample OMGUI-configured `.cwa` for the header diff and DataViewer fixture.
 - Whether Clear is site-side or CCC-only on kit return.

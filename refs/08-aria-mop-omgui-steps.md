@@ -1,6 +1,6 @@
 # ARIA Wearables MOP (August 15, V1) — OMGUI steps the app must match
 
-Source: "Wearables MOP_August15_V1.pdf" (Abby Dickinson), §2.5/2.6, §9. Screenshots in the MOP are of OMGUI V1.0.0.45 on Windows; window title reads `Open Movement [V1.0.0.45] - C:\Users\ERA EEG\Documents\` (title = "Open Movement [Vx] - <workspace path>").
+Source: "Wearables MOP_August15_V1.pdf" (ARIA CCC), §2.5/2.6, §9. Screenshots in the MOP are of OMGUI V1.0.0.45 on Windows; window title reads `Open Movement [V1.0.0.45] - C:\Users\<user>\Documents\` (title = "Open Movement [Vx] - <workspace path>").
 
 ## Site context
 - Sites own the "study computer used for watch data download". Each site's equipment code: `[Site]-AX-[nn]` (e.g. CLA-AX-04); device ID (7 digits, e.g. 6036222) is recorded in Lasso Form 2.

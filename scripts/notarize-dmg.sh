@@ -14,7 +14,6 @@ CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.."
 REPO_ROOT="$(pwd)"
 DIST="$REPO_ROOT/dist"
 APP="$DIST/OmGui.app"
-PROFILE="${NOTARY_PROFILE:-omgui-notary}"
 
 log() { printf '%s\n' "$*"; }
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -27,19 +26,16 @@ VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/
 DMG="$DIST/OmGui-$VERSION.dmg"
 [[ -f "$DMG" ]] || fail "$DMG not found — run scripts/build-dmg.sh first"
 
-if ! xcrun notarytool history --keychain-profile "$PROFILE" >/dev/null 2>&1; then
-    fail "notarytool keychain profile '$PROFILE' not found or not usable.
-Run this from Terminal.app (not from inside Claude Code):
-  xcrun notarytool store-credentials $PROFILE --apple-id <apple-id> --team-id <team-id> --password <app-specific-password>
-See docs/RELEASE.md."
-fi
+# shellcheck source=scripts/lib-notary.sh
+source "$REPO_ROOT/scripts/lib-notary.sh"
+resolve_notary_auth || exit 1
 
 SIGNING_AUTH="$(codesign -dvv "$DMG" 2>&1 | sed -n 's/^Authority=//p' | head -1)"
 [[ "$SIGNING_AUTH" == "Developer ID Application: "* ]] \
     || fail "$DMG is not signed with a Developer ID Application identity (Authority='$SIGNING_AUTH'). Rebuild with scripts/build-dmg.sh (no --adhoc)."
 
-log "Submitting $DMG to notarytool (profile: $PROFILE)"
-xcrun notarytool submit "$DMG" --keychain-profile "$PROFILE" --wait
+log "Submitting $DMG to notarytool ($NOTARY_AUTH_DESC)"
+xcrun notarytool submit "$DMG" "${NOTARY_AUTH[@]}" --wait
 
 log "Stapling $DMG"
 xcrun stapler staple "$DMG" || fail "stapler staple failed on $DMG"
