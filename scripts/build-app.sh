@@ -10,11 +10,14 @@
 #
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.."
+REPO_ROOT="$(pwd)"
 RESOURCES="$REPO_ROOT/Resources"
 DIST="$REPO_ROOT/dist"
 APP="$DIST/OmGui.app"
 PRODUCT="OmGui"
+
+source "$REPO_ROOT/scripts/lib-sign.sh"
 
 ADHOC=0
 VERSION=""
@@ -27,13 +30,19 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+log() { printf '%s\n' "$*"; }
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
 if [[ -z "$VERSION" ]]; then
     VERSION="$(cd "$REPO_ROOT" && git describe --tags --always 2>/dev/null || echo "0.0.0")"
 fi
+# Strip a leading 'v' (git describe on a "vX.Y.Z" tag) — CFBundleShortVersionString must be a
+# plain numeric dot-separated version; AppInfo.isNumericVersion rejects anything else and falls
+# back to a hard-coded "1.0.0", which is worse than failing the build here.
+VERSION="${VERSION#v}"
+[[ "$VERSION" =~ ^[0-9]+(\.[0-9]+){0,3}$ ]] \
+    || fail "VERSION '$VERSION' is not a plain numeric dot-separated version (e.g. 1.2.3) — pass --version X.Y.Z, or tag the release numerically"
 BUILD_NUMBER="$(cd "$REPO_ROOT" && git rev-list --count HEAD 2>/dev/null || echo 1)"
-
-log() { printf '%s\n' "$*"; }
-fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 log "Building $PRODUCT $VERSION (build $BUILD_NUMBER)"
 
@@ -69,20 +78,43 @@ if [[ -d "$RESOURCES/Plugins" ]]; then
     find "$APP/Contents/Resources/Plugins" -name '*.sh' -exec chmod +x {} +
 fi
 
-sed -e "s/@VERSION@/$VERSION/" -e "s/@BUILD@/$BUILD_NUMBER/" \
-    "$RESOURCES/Info.plist.in" > "$APP/Contents/Info.plist"
+# PlistBuddy, not sed: VERSION/BUILD_NUMBER can otherwise contain sed metacharacters (a tag like
+# "release/1.2" breaks the substitution outright; "&" duplicates the match) and land unescaped in
+# the rendered plist.
+cp "$RESOURCES/Info.plist.in" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null || fail "rendered Info.plist failed lint"
 
 printf 'APPL????' > "$APP/Contents/PkgInfo"
+
+# ---------------------------------------------------------------------------
+# 3b. Strip build-machine toolchain rpaths (C45)
+#
+# A release build's LC_RPATH can carry the build machine's Xcode/toolchain path (e.g.
+# .../XcodeDefault.xctoolchain/usr/lib/swift-6.2/macosx). Nothing resolves through it while every
+# Swift dylib the app uses ships inside the bundle, but it leaks the builder's local layout and
+# would become a launch failure on a user Mac the day an @rpath-relative dylib enters the link.
+# Must run before codesign — install_name_tool after signing invalidates the signature.
+# ---------------------------------------------------------------------------
+BIN="$APP/Contents/MacOS/$PRODUCT"
+TOOLCHAIN_RPATHS="$(otool -l "$BIN" | awk '/ path / && /(Xcode\.app|\.xctoolchain|CommandLineTools)/ {print $2}')"
+if [[ -n "$TOOLCHAIN_RPATHS" ]]; then
+    while IFS= read -r rp; do
+        [[ -z "$rp" ]] && continue
+        log "Stripping toolchain LC_RPATH: $rp"
+        install_name_tool -delete_rpath "$rp" "$BIN"
+    done <<< "$TOOLCHAIN_RPATHS"
+fi
+REMAINING_RPATHS="$(otool -l "$BIN" | awk '/ path / && /(Xcode\.app|\.xctoolchain|CommandLineTools)/ {print $2}')"
+[[ -z "$REMAINING_RPATHS" ]] || fail "toolchain rpath still present after stripping: $REMAINING_RPATHS"
 
 # ---------------------------------------------------------------------------
 # 4. Sign
 # ---------------------------------------------------------------------------
 IDENTITY=""
 if [[ "$ADHOC" -eq 0 ]]; then
-    IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
-        | grep 'Developer ID Application' | head -1 \
-        | sed -E 's/^[[:space:]]*[0-9]+\) ([A-F0-9]+) .*/\1/' || true)"
+    IDENTITY="$(resolve_sign_identity)"
 fi
 
 if [[ -n "$IDENTITY" ]]; then
@@ -93,6 +125,7 @@ if [[ -n "$IDENTITY" ]]; then
         "$APP/Contents/Helpers/cwa-convert"
     codesign --force --sign "$IDENTITY" --options runtime --timestamp \
         --entitlements "$RESOURCES/OmGui.entitlements" "$APP"
+    assert_team_identifier "$APP"
 else
     log "WARNING: no Developer ID Application identity found (or --adhoc given)."
     log "WARNING: signing ad-hoc. This build cannot be notarized and Gatekeeper will warn on other Macs."

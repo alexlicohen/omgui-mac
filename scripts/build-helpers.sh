@@ -12,7 +12,8 @@
 #
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.."
+REPO_ROOT="$(pwd)"
 VENDOR="$REPO_ROOT/Vendor"
 OUT_DIR="${OUT_DIR:-$REPO_ROOT/build/helpers}"
 CC="${CC:-clang}"

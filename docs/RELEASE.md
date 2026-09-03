@@ -5,8 +5,11 @@
 1. **Developer ID Application certificate.** Xcode → Settings → Accounts → select your Apple ID
    → Manage Certificates → **+** → Developer ID Application. This installs the cert + private key
    in your login keychain; `scripts/build-app.sh`/`build-dmg.sh` pick it up automatically via
-   `security find-identity -v -p codesigning`.
-2. **Notary credentials**, stored once in the keychain (never on disk):
+   `security find-identity -v -p codesigning`. If more than one Developer ID Application identity
+   is installed, the scripts refuse to guess — set `SIGN_IDENTITY=<hash-or-name>` to pick one.
+2. **Notary credentials**, stored once in the keychain (never on disk). **Run this from
+   Terminal.app, not from inside Claude Code** — the command creates an interactive keychain item
+   that a non-interactive session cannot set up correctly:
    ```sh
    xcrun notarytool store-credentials omgui-notary \
        --apple-id <your Apple ID email> \
@@ -19,13 +22,33 @@
 ## Cutting a release
 
 ```sh
-scripts/build-app.sh              # dist/OmGui.app, Developer ID signed
-scripts/build-dmg.sh              # dist/OmGui-<version>.dmg, signed
-scripts/notarize.sh               # submit, staple DMG + app, print Gatekeeper check
+scripts/release.sh [--version X.Y.Z]
 ```
 
-`build-app.sh` derives the version from `git describe --tags --always`; pass `--version X.Y.Z` to
-override. Then:
+which runs, in this exact order:
+
+```sh
+scripts/build-app.sh          # dist/OmGui.app, Developer ID signed
+scripts/notarize-app.sh       # submit the .app, staple + validate it
+scripts/build-dmg.sh          # dist/OmGui-<version>.dmg, built from the STAPLED .app, signed
+scripts/notarize-dmg.sh       # submit the DMG, staple + validate it
+```
+
+**The order matters.** The app is notarized and stapled *before* the DMG is built, so the ticket
+travels with `OmGui.app` itself — a user who drags the app out of the DMG onto an offline or
+firewalled Mac still launches cleanly. Building the DMG first and only stapling the DMG (the old
+order) leaves the app with no ticket of its own. Each script fails hard (not a warning) if
+`stapler staple`/`stapler validate` fails, if the notary keychain profile is missing, or if the
+object being submitted isn't signed with a Developer ID Application identity — an Apple
+Development or ad-hoc signature is caught here instead of surfacing as an opaque notarytool
+rejection after a full upload-and-wait.
+
+`build-app.sh` derives the version from `git describe --tags --always`, stripping a leading `v`
+(a `vX.Y.Z` tag). The build fails if the result isn't a plain numeric dot-separated version — pass
+`--version X.Y.Z` explicitly for an untagged commit, since `AppInfo.isNumericVersion` rejects
+anything else in the shipped app and would silently fall back to `1.0.0`.
+
+Then:
 
 ```sh
 git tag vX.Y.Z
@@ -34,11 +57,13 @@ gh release create vX.Y.Z dist/OmGui-X.Y.Z.dmg --title "OmGui vX.Y.Z" --notes "..
 ```
 
 Add `--adhoc` to `build-app.sh`/`build-dmg.sh` for a local test build with no Developer ID cert
-installed — `notarize.sh` refuses to run against an ad-hoc-signed app.
+installed — `notarize-app.sh`/`notarize-dmg.sh` refuse to run against an ad-hoc-signed object.
 
 ## What a site user does
 
 1. Download and double-click the `.dmg`.
 2. Drag `OmGui.app` to `Applications`.
 3. Launch it. On first read of an attached AX3/AX6 volume, macOS shows the removable-volumes
-   permission prompt (`NSRemovableVolumesUsageDescription`) — allow it.
+   permission prompt (`NSRemovableVolumesUsageDescription`) — allow it. The first refresh of a
+   Documents/Desktop/Downloads workspace shows the corresponding folder-access prompt — allow that
+   too, or the Data Files tab renders empty with no error.

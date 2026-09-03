@@ -28,6 +28,12 @@
 	<string>omgui-mac is a native macOS port of Axivity OMGUI, © Newcastle University / Open Movement (BSD 2-clause). Port © Alex Cohen, same licence.</string>
 	<key>NSRemovableVolumesUsageDescription</key>
 	<string>OmGui reads the recording file on an attached AX3/AX6 device.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>OmGui reads and writes downloaded recordings and analysis output in your Documents folder.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>OmGui reads and writes downloaded recordings and analysis output when your workspace is set to your Desktop.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>OmGui reads and writes downloaded recordings and analysis output when your workspace is set to your Downloads folder.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>CFBundleSupportedPlatforms</key>

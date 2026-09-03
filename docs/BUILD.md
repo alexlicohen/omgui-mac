@@ -80,11 +80,14 @@ build/helpers/cwa-convert
 
 ```sh
 scripts/build-app.sh [--adhoc] [--version X.Y.Z]   # dist/OmGui.app
-scripts/build-dmg.sh [--adhoc]                     # dist/OmGui-<version>.dmg
-scripts/notarize.sh                                # notarize + staple (needs Developer ID build)
+scripts/notarize-app.sh                            # notarize + staple the .app (Developer ID build only)
+scripts/build-dmg.sh [--adhoc]                     # dist/OmGui-<version>.dmg, built from the stapled .app
+scripts/notarize-dmg.sh                            # notarize + staple the .dmg
+scripts/release.sh [--version X.Y.Z]               # runs all four in that order
 ```
 
 `build-app.sh` builds the `OmGui` executable, runs `build-helpers.sh`, and assembles the bundle
 from `Resources/` (icon, `Info.plist.in` template, entitlements), signing with a Developer ID
-Application identity when one is installed and ad-hoc otherwise. `dist/` is gitignored. See
-[`docs/RELEASE.md`](RELEASE.md) for the full release process.
+Application identity when one is installed and ad-hoc otherwise. `dist/` is gitignored. The app
+must be notarized and stapled *before* the DMG is built — see [`docs/RELEASE.md`](RELEASE.md) for
+why the order matters and for the full release process.

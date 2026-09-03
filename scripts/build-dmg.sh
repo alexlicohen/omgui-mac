@@ -8,10 +8,13 @@
 #
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")/.."
+REPO_ROOT="$(pwd)"
 DIST="$REPO_ROOT/dist"
 APP="$DIST/OmGui.app"
 VOLNAME="OmGui"
+
+source "$REPO_ROOT/scripts/lib-sign.sh"
 
 ADHOC=0
 while [[ $# -gt 0 ]]; do
@@ -31,8 +34,14 @@ DMG="$DIST/OmGui-$VERSION.dmg"
 
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
+# mktemp -d creates the dir mode 0700; that becomes the DMG's -srcfolder, so the mounted volume
+# root inherits it unless we open it up. Masked on a normal desktop because hdiutil attach mounts
+# noowners — an MDM `-owners on` attach, or a root-owned mount handed to a non-root installer,
+# sees an unreadable/empty volume otherwise.
+chmod 755 "$STAGE"
 
-cp -R "$APP" "$STAGE/OmGui.app"
+# ditto, not cp -R: preserves a signed bundle's extended attributes/resource fork faithfully.
+ditto "$APP" "$STAGE/OmGui.app"
 ln -s /Applications "$STAGE/Applications"
 
 rm -f "$DMG"
@@ -40,14 +49,13 @@ hdiutil create -volname "$VOLNAME" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 
 IDENTITY=""
 if [[ "$ADHOC" -eq 0 ]]; then
-    IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
-        | grep 'Developer ID Application' | head -1 \
-        | sed -E 's/^[[:space:]]*[0-9]+\) ([A-F0-9]+) .*/\1/' || true)"
+    IDENTITY="$(resolve_sign_identity)"
 fi
 
 if [[ -n "$IDENTITY" ]]; then
     log "Signing DMG with Developer ID Application identity $IDENTITY"
     codesign --force --sign "$IDENTITY" --timestamp "$DMG"
+    assert_team_identifier "$DMG"
 else
     log "WARNING: no Developer ID Application identity found (or --adhoc given). Signing DMG ad-hoc."
     codesign --force --sign - "$DMG"
