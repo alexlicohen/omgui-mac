@@ -67,19 +67,26 @@ public struct ToolInvocation: Sendable, Equatable {
     public var inputPath: String
     /// The directory the process runs in, when the job needs one (plugins).
     public var workingDirectory: String?
+    /// Set when the executable must not be launched at all — a plugin whose run file escapes its
+    /// folder, is not executable, or is still quarantined. `ToolProcess` reports it instead of
+    /// spawning, so the queue row fails with a message rather than a bare non-zero exit
+    /// (`refs/10-deep-review.md` C24).
+    public var refusal: String?
 
     public init(executable: ToolExecutable,
                 argumentList: [ToolArgument],
                 outputPath: String?,
                 finalPath: String,
                 inputPath: String,
-                workingDirectory: String? = nil) {
+                workingDirectory: String? = nil,
+                refusal: String? = nil) {
         self.executable = executable
         self.argumentList = argumentList
         self.outputPath = outputPath
         self.finalPath = finalPath
         self.inputPath = inputPath
         self.workingDirectory = workingDirectory
+        self.refusal = refusal
     }
 
     /// argv, unquoted — `Process` does not go through a shell.

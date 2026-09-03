@@ -189,13 +189,19 @@ final class ExportFlowTests: XCTestCase {
         XCTAssertEqual(blocks.count, 12, accuracy: 0.5)
     }
 
-    func testTheSelectionDescriptionUsesOmguisDateFormat() {
+    /// The format is OMGUI's; the *clock* is the device's, which is UTC because that is what
+    /// libomapi reads the file's wall-clock stamps as (`refs/10-deep-review.md` C21). Formatting in
+    /// the machine's own zone described a window four hours from the one `-blockstart` exported.
+    func testTheSelectionDescriptionUsesOmguisDateFormatOnTheDevicesClock() {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_GB_POSIX")
+        formatter.timeZone = .gmt
         formatter.dateFormat = "dd/MM/yyyy HH:mm:ss"
         let start = Date(timeIntervalSince1970: 1_770_000_000)
         let end = start.addingTimeInterval(3600)
         XCTAssertEqual(DataSelection.description(for: start...end),
                        formatter.string(from: start) + " - " + formatter.string(from: end))
+        XCTAssertEqual(DataSelection.description(for: start...end),
+                       "02/02/2026 02:40:00 - 02/02/2026 03:40:00")
     }
 }

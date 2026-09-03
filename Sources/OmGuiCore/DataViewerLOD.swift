@@ -83,39 +83,71 @@ public struct ColumnAggregate: Sendable {
 final class DataLevel {
     let duration: Double
     let start: Double
+    /// The most buckets this level may ever hold.
+    ///
+    /// A `.CWA` block carries the device's own RTC, and a device whose clock has failed stamps
+    /// blocks years away from the rest of the file. Without a ceiling, `grow` would size the
+    /// bucket array to the *clock error* — a block stamped 2063 against a 1 s base bucket asks for
+    /// 1.17e9 buckets, 47 GB, and the app is killed. Growth past this limit is a clock anomaly,
+    /// not an allocation (`refs/10-deep-review.md` C18).
+    let bucketLimit: Int
     private(set) var bucketCount: Int
     var mins: [Float]
     var maxs: [Float]
     var counts: [UInt32]
 
-    init(start: Double, duration: Double, bucketCount: Int) {
+    /// `bucketLimit` defaults to "no growth at all", which is what a detail window wants: it reads
+    /// with `restrictToBounds`, so it never grows.
+    init(start: Double, duration: Double, bucketCount: Int, bucketLimit: Int? = nil) {
         self.start = start
         self.duration = duration
         self.bucketCount = Swift.max(1, bucketCount)
+        self.bucketLimit = Swift.max(self.bucketCount, bucketLimit ?? self.bucketCount)
         let width = self.bucketCount * DataSeries.count
         mins = [Float](repeating: .greatestFiniteMagnitude, count: width)
         maxs = [Float](repeating: -.greatestFiniteMagnitude, count: width)
         counts = [UInt32](repeating: 0, count: self.bucketCount)
     }
 
+    /// The bucket a time falls in, snapping a time that is a boundary onto the bucket it opens.
+    ///
+    /// The snap matters below about a tenth of a second a bucket: times arrive as
+    /// `windowStart + n * duration` in absolute epoch seconds, where one ulp is 2.4e-7 s, so an
+    /// exact boundary can land a hair *below* itself and a plain `floor` answers the bucket before
+    /// — which at a 50 ms detail bucket made every pixel column carry its neighbour's samples too.
     @inline(__always) func bucket(for time: Double) -> Int {
-        Int(((time - start) / duration).rounded(.down))
+        let position = (time - start) / duration
+        let boundary = position.rounded()
+        if opensBucket(time, boundary) { return Int(boundary) }
+        return Int(position.rounded(.down))
+    }
+
+    /// Whether `time` *is* the start of bucket `index`, to within a few ulps of the arithmetic that
+    /// produced it (`start + index * duration` re-derived at the same magnitude).
+    @inline(__always) func opensBucket(_ time: Double, _ index: Double) -> Bool {
+        abs(time - (start + index * duration)) <= 8 * time.ulp
     }
 
     @inline(__always) func startTime(ofBucket bucket: Int) -> Double {
         start + Double(bucket) * duration
     }
 
-    /// Extends the level upwards in time. Only reached when a file's blocks run past the end time
-    /// its header advertises (a device whose clock jumped forward mid-recording).
-    func grow(toBucket bucket: Int) {
-        guard bucket >= bucketCount else { return }
-        let target = Swift.max(bucket + 1, bucketCount + bucketCount / 2)
+    /// Extends the level upwards in time, never past `bucketLimit`. Only reached when a file's
+    /// blocks run past the end time its header advertises (a device whose clock jumped forward
+    /// mid-recording).
+    ///
+    /// Returns false when `bucket` is past the limit; the caller treats that as a clock anomaly.
+    @discardableResult
+    func grow(toBucket bucket: Int) -> Bool {
+        guard bucket >= bucketCount else { return true }
+        guard bucket < bucketLimit else { return false }
+        let target = Swift.min(bucketLimit, Swift.max(bucket + 1, bucketCount + bucketCount / 2))
         let extra = target - bucketCount
         mins.append(contentsOf: repeatElement(.greatestFiniteMagnitude, count: extra * DataSeries.count))
         maxs.append(contentsOf: repeatElement(-.greatestFiniteMagnitude, count: extra * DataSeries.count))
         counts.append(contentsOf: repeatElement(0, count: extra))
         bucketCount = target
+        return true
     }
 
     /// Folds `[from, through]` of `source` into this level's buckets, recomputing each affected
@@ -125,9 +157,10 @@ final class DataLevel {
         let ratio = Int((duration / source.duration).rounded())
         guard ratio >= 1 else { return }
         let first = range.lowerBound / ratio
-        let last = (range.upperBound - 1) / ratio
+        var last = (range.upperBound - 1) / ratio
         guard first <= last else { return }
-        grow(toBucket: last)
+        if !grow(toBucket: last) { last = bucketCount - 1 }
+        guard first <= last else { return }
         let n = DataSeries.count
 
         for bucket in first...last {
@@ -195,7 +228,13 @@ final class DataLevel {
             }
             if bucket >= bucketCount {
                 if restrictToBounds { break }
-                grow(toBucket: bucket)
+                // Past the level's growth budget: the block's RTC disagrees with the rest of the
+                // file by more than the level can represent, so it is a clock anomaly rather than
+                // a request to allocate. Count it and drop the rest of the block.
+                guard grow(toBucket: bucket) else {
+                    anomalies += 1
+                    break
+                }
             }
 
             // Samples up to the end of this bucket, or the end of the block.
@@ -265,8 +304,11 @@ final class DataLevel {
     func aggregate(from: Double, to: Double) -> ColumnAggregate {
         var result = ColumnAggregate()
         let firstBucket = Swift.max(0, bucket(for: from))
-        var lastBucket = bucket(for: to)
-        if Double(lastBucket) * duration + start >= to { lastBucket -= 1 }   // `to` is exclusive
+        // `to` is exclusive, so a `to` that lands on a boundary does not cover the bucket it opens.
+        // Deciding "lands on a boundary" is the same snap `bucket(for:)` makes.
+        let position = (to - start) / duration
+        let boundary = position.rounded()
+        var lastBucket = opensBucket(to, boundary) ? Int(boundary) - 1 : Int(position.rounded(.down))
         lastBucket = Swift.min(lastBucket, bucketCount - 1)
         guard firstBucket <= lastBucket else { return result }
 
@@ -334,14 +376,15 @@ public final class DataViewerLOD: @unchecked Sendable {
     private var seekStride = 64
 
     public let start: Double
-    public private(set) var end: Double
+    private var _end: Double
 
     public init(start: Double, end: Double, maximumBaseBuckets: Int = 262_144) {
         self.start = start
-        self.end = Swift.max(end, start + 1)
+        let end = Swift.max(end, start + 1)
+        _end = end
         _loadedThrough = start
 
-        let span = self.end - start
+        let span = end - start
         let base = DataViewerLOD.ladder.first { span / $0 <= Double(maximumBaseBuckets) }
             ?? DataViewerLOD.ladder[DataViewerLOD.ladder.count - 1]
         var durations = [base]
@@ -350,17 +393,27 @@ public final class DataViewerLOD: @unchecked Sendable {
             if span / next < 2 { break }
             durations.append(next)
         }
+        // Blocks past the header's advertised end grow the levels (a recording that is still
+        // running, or one with a long gap in it), but only up to the same bucket budget the ladder
+        // was chosen against — memory stays bounded by the budget, never by a broken RTC.
+        let baseLimit = Swift.max(Int((span / base).rounded(.up)) + 1, maximumBaseBuckets)
         levels = durations.map { duration in
-            DataLevel(start: start,
-                      duration: duration,
-                      bucketCount: Int((span / duration).rounded(.up)) + 1)
+            let buckets = Int((span / duration).rounded(.up)) + 1
+            let limit = Swift.max(buckets, Int((Double(baseLimit) * base / duration).rounded(.up)) + 1)
+            return DataLevel(start: start,
+                             duration: duration,
+                             bucketCount: buckets,
+                             bucketLimit: limit)
         }
     }
 
     /// Bucket duration of every level, coarsest last.
     public var levelDurations: [Double] { levels.map(\.duration) }
     public var baseDuration: Double { levels[0].duration }
-    public var bounds: ClosedRange<Double> { start...end }
+    /// Wall-clock end of the extent, which the load pushes out when the file runs past the end its
+    /// header advertises. Read under the lock: the loader writes it from its own queue.
+    public var end: Double { lock.withLock { _end } }
+    public var bounds: ClosedRange<Double> { lock.withLock { start..._end } }
 
     public var hasGyro: Bool { lock.withLock { _hasGyro } }
     /// Wall-clock time the sequential load has reached.
@@ -406,9 +459,12 @@ public final class DataViewerLOD: @unchecked Sendable {
             } else {
                 pendingFold = touched
             }
+            // Only a block that actually landed in a bucket moves the extent: a block the level
+            // refused (an RTC years from the rest of the file) must not stretch the plot's axis
+            // across the clock error either.
+            _loadedThrough = Swift.max(_loadedThrough, summary.end)
+            if summary.end > _end { _end = summary.end }
         }
-        _loadedThrough = Swift.max(_loadedThrough, summary.end)
-        if summary.end > end { end = summary.end }
         if _blocksRead % seekStride == 1 || seek.isEmpty {
             seek.append((summary.start, summary.index))
         }

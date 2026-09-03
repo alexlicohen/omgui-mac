@@ -175,7 +175,17 @@ final class MainMenuController: NSObject, NSMenuDelegate {
         menu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         menu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Select All", action: #selector(selectAllDevices), keyEquivalent: "a").target = self
+        // Nil target, so ⌘A goes down the responder chain the way Cut/Copy/Paste above it do:
+        // whatever has focus selects all of *itself*. A `target = self` binding fires regardless
+        // of the first responder, which on Windows cannot happen (a modal form owns the message
+        // loop) but here hijacks ⌘A in every text field on every sheet — the Session ID box in
+        // Recording Settings selected every connected device instead of its own text
+        // (`refs/10-deep-review.md` C23). `NSOutlineView` implements `selectAll(_:)`, so the
+        // device list still answers it while it has focus, through `GroupedTableView`'s selection
+        // binding; with nothing selectable focused, AppKit greys the item out.
+        menu.addItem(withTitle: "Select All",
+                     action: #selector(NSResponder.selectAll(_:)),
+                     keyEquivalent: "a")
         menu.delegate = self
         editMenu = menu
         return menu
@@ -239,11 +249,6 @@ final class MainMenuController: NSObject, NSMenuDelegate {
     @objc private func calculateSleepTime() { model.calculateSleepTime() }
     @objc private func showPlugins() { model.showPlugins() }
     @objc private func showAbout() { model.showAbout = true }
-
-    @objc private func selectAllDevices() {
-        model.selectedDeviceIds = Set(model.rows.map(\.deviceId))
-        model.selectionChanged()
-    }
 
     @objc private func toggleView(_ sender: NSMenuItem) {
         switch sender.tag {

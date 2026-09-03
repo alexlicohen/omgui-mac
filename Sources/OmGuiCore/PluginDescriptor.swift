@@ -31,11 +31,56 @@ public struct PluginDescriptor: Sendable, Equatable, Identifiable {
     public var id: String { folder.path }
 
     /// The plugin's run file, resolved against its folder.
-    public var runFileURL: URL { folder.appendingPathComponent(runFilePath) }
+    ///
+    /// Standardized, so a descriptor's `../../../../../usr/bin/osascript` is a path that visibly
+    /// leaves the plugin folder rather than one that only leaves it once the OS resolves it;
+    /// `runFileIssue` is what refuses to launch it (`refs/10-deep-review.md` C24).
+    public var runFileURL: URL { folder.appendingPathComponent(runFilePath).standardizedFileURL }
     /// The HTML form, resolved against its folder.
-    public var htmlFileURL: URL { folder.appendingPathComponent(htmlFilePath) }
+    public var htmlFileURL: URL { folder.appendingPathComponent(htmlFilePath).standardizedFileURL }
 
     public init() {}
+
+    /// Whether a file resolved against the plugin folder actually stays inside it.
+    public func isInsideFolder(_ url: URL) -> Bool {
+        let root = folder.standardizedFileURL.resolvingSymlinksInPath().path
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        return url.standardizedFileURL.resolvingSymlinksInPath().path.hasPrefix(prefix)
+    }
+
+    /// Why this plugin's run file must not be launched, or `nil` when it is safe to run.
+    ///
+    /// `RunProcess2` hands the descriptor's run file straight to `Process`, which is not
+    /// LaunchServices: Gatekeeper never sees it, the child inherits OmGui's TCC responsibility,
+    /// and nothing but this check stands between an XML file and arbitrary execution.
+    ///
+    /// The quarantine flag is only consulted for a plugin outside the app's own bundle: a
+    /// downloaded `.app` carries `com.apple.quarantine` on everything inside it, and the bundled
+    /// plugin has already been through notarisation with the rest of the app.
+    public func runFileIssue(fileManager: FileManager = .default,
+                             bundle: Bundle = .main) -> PluginRunFileIssue? {
+        guard runFilePath != "none", !runFilePath.isEmpty else { return .notSpecified }
+        let url = runFileURL
+        let path = url.path
+        guard isInsideFolder(url) else { return .outsideFolder(path) }
+
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+            return .missing(path)
+        }
+        guard fileManager.isExecutableFile(atPath: path) else { return .notExecutable(path) }
+
+        #if os(macOS)
+        let bundleRoot = bundle.bundleURL.standardizedFileURL.resolvingSymlinksInPath().path
+        let inBundle = path.hasPrefix(bundleRoot.hasSuffix("/") ? bundleRoot : bundleRoot + "/")
+        if !inBundle,
+           let values = try? url.resourceValues(forKeys: [.quarantinePropertiesKey]),
+           values.quarantineProperties != nil {
+            return .quarantined(path)
+        }
+        #endif
+        return nil
+    }
 
     /// `Plugin.CreatePlugin` — parse one descriptor. Returns `nil` for anything that is not XML.
     public static func parse(xml: String, folder: URL) -> PluginDescriptor? {
@@ -81,6 +126,37 @@ public struct PluginDescriptor: Sendable, Equatable, Identifiable {
               let xml = try? String(contentsOf: folder.appendingPathComponent(name), encoding: .utf8)
         else { return nil }
         return parse(xml: xml, folder: folder)
+    }
+}
+
+/// Why a plugin's run file cannot be launched.
+public enum PluginRunFileIssue: Sendable, Equatable {
+    /// The descriptor names no run file (`Plugin.CreatePlugin`'s `"none"` default).
+    case notSpecified
+    /// The run file resolves outside the plugin's own folder.
+    case outsideFolder(String)
+    case missing(String)
+    case notExecutable(String)
+    /// Downloaded from the internet and never released by Gatekeeper.
+    case quarantined(String)
+
+    /// What the user is told instead of a bare non-zero exit.
+    public var message: String {
+        switch self {
+        case .notSpecified:
+            return "This plugin does not name a program to run (its descriptor has no runFilePath)."
+        case .outsideFolder(let path):
+            return "Refusing to run \(path): a plugin may only run a program inside its own folder."
+        case .missing(let path):
+            return "The plugin's run file is missing: \(path)"
+        case .notExecutable(let path):
+            return "The plugin's run file is not executable: \(path)\n"
+                + "Make it executable (chmod +x) and run the plugin again."
+        case .quarantined(let path):
+            return "Refusing to run \(path): the file is quarantined (it was downloaded from the "
+                + "internet and macOS has not released it).\nCheck where the plugin came from, then "
+                + "clear the flag with: xattr -d com.apple.quarantine \"\(path)\""
+        }
     }
 }
 
@@ -148,9 +224,13 @@ public struct PluginSelection: Sendable, Equatable {
 
     public static let timeFormat = "dd/MM/yyyy/_HH:mm:ss"
 
+    /// Formatted in UTC, the clock the plot draws and the one the `.CWA` stores: a plugin is given
+    /// `startTime`/`endTime` beside `startBlock`/`blockCount`, and those two describe the same
+    /// window only if both are read on the device's own clock (`refs/10-deep-review.md` C21).
     public static func timeString(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_GB_POSIX")
+        formatter.timeZone = .gmt
         formatter.dateFormat = timeFormat
         return formatter.string(from: date)
     }
@@ -205,44 +285,58 @@ public enum PluginHost {
     }
 
     /// `RunPluginForm.NewArgumentCreator` — the fragment the page sets is
-    /// `<parameters>?<output file name>`; the first CWA is prepended, quoted.
+    /// `<parameters>?<output file name>`.
+    ///
+    /// `parameterString` is the page's own text and nothing else. Upstream splices the first CWA
+    /// into it as `"<path>" ` and re-splits the result, so a file name containing a `"` splices
+    /// extra argv entries into the plugin's command line; here the input path never goes through
+    /// the splitter at all — `invocation` puts it in front of the split parameters as its own argv
+    /// entry (`refs/10-deep-review.md` C41).
     public static func arguments(fromFragment fragment: String,
                                  plugin: PluginDescriptor,
                                  inputs: [String]) -> (parameterString: String, outputName: String)? {
         let parts = fragment.components(separatedBy: "?")
         guard parts.count == 2 else { return nil }
-        var parameters = parts[0]
-        // Upstream's one hard-coded exception is the ClimbAx plugin.
-        if plugin.readableName != "ClimbAx", let first = inputs.first {
-            parameters = "\"\(first)\" " + parameters
-        }
-        return (parameters, parts[1])
+        return (parts[0], parts[1])
     }
 
-    /// `RunProcess2` — put the output file in the working folder, then split the command line the
-    /// way Windows would before handing it to `Process`.
+    /// `RunProcess2` — the plugin's argv: the first CWA, then the page's parameters split the way
+    /// Windows would, with the output name resolved into the working folder.
     ///
-    /// Upstream substitutes even when the plugin asks for no output file, which for a name of `""`
+    /// Every path that the *host* contributes (the input file, the output file) is placed as a
+    /// finished argv entry. Upstream instead re-quotes the output path into the command line and
+    /// splits it again, which loses a workspace name containing a `"` (`refs/10-deep-review.md`
+    /// C25); only the plugin page's own text is ever parsed here.
+    ///
+    /// Upstream also substitutes when the plugin asks for no output file, which for a name of `""`
     /// mangles the quoting; the port only substitutes a non-empty name.
     public static func invocation(plugin: PluginDescriptor,
                                   parameterString: String,
                                   outputName: String,
                                   workingFolder: URL,
                                   inputs: [String]) -> ToolInvocation {
-        var parameters = parameterString
+        var arguments = splitCommandLine(parameterString).map(ToolArgument.quoted)
+        // Upstream's one hard-coded exception is the ClimbAx plugin.
+        if plugin.readableName != "ClimbAx", let first = inputs.first {
+            arguments.insert(.quoted(first), at: 0)
+        }
         var finalPath = inputs.first ?? ""
         let trimmed = outputName.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
         if !trimmed.isEmpty {
             let full = workingFolder.appendingPathComponent(trimmed).path
-            parameters = parameters.replacingOccurrences(of: outputName, with: "\"\(full)\"")
+            arguments = arguments.map { argument in
+                guard argument.value.contains(trimmed) else { return argument }
+                return .quoted(argument.value.replacingOccurrences(of: trimmed, with: full))
+            }
             finalPath = full
         }
         return ToolInvocation(executable: .path(plugin.runFileURL.path),
-                              argumentList: splitCommandLine(parameters).map(ToolArgument.quoted),
+                              argumentList: arguments,
                               outputPath: nil,
                               finalPath: finalPath,
                               inputPath: inputs.first ?? "",
-                              workingDirectory: plugin.folder.path)
+                              workingDirectory: plugin.folder.path,
+                              refusal: plugin.runFileIssue()?.message)
     }
 
     /// Windows-style argv splitting: whitespace separates, double quotes group.

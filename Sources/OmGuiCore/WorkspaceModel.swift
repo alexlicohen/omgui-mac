@@ -18,6 +18,35 @@ public struct WorkspaceFile: Hashable, Sendable, Identifiable {
     public var id: String { location }
 }
 
+/// A directory listing that failed, and why — what the Data Files tab shows instead of nothing.
+public struct WorkspaceListingFailure: Sendable, Equatable {
+    public var folder: String
+    public var message: String
+
+    public init(folder: String, message: String) {
+        self.folder = folder
+        self.message = message
+    }
+}
+
+/// The one failure `WorkspaceListing` remembers. Listings run on whatever thread asked for them,
+/// so it carries its own lock.
+private let workspaceListingFailure = LockedFailure()
+
+private final class LockedFailure: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: WorkspaceListingFailure?
+
+    func get() -> WorkspaceListingFailure? {
+        lock.lock(); defer { lock.unlock() }
+        return value
+    }
+
+    func set(_ failure: WorkspaceListingFailure?) {
+        lock.lock(); value = failure; lock.unlock()
+    }
+}
+
 /// Listing and formatting for the workspace, split out of the views so it is testable.
 ///
 /// Mirrors `MainForm.fileListViewRefreshList` / `fileListViewOutputRefreshList` / `UpdateFile`.
@@ -59,10 +88,45 @@ public enum WorkspaceListing {
                              date: date)
     }
 
+    /// Why the last listing came back empty, when it was not simply an empty folder.
+    ///
+    /// Cleared by the next listing that succeeds, and set by every one that fails. A non-sandboxed
+    /// hardened-runtime app defaults its working folder to `~/Documents`, which is TCC protected:
+    /// on "Don't Allow" the listing raises `NSFileReadNoPermissionError`, and swallowing that made
+    /// the Data Files tab indistinguishable from an empty folder with no way back except System
+    /// Settings (`refs/10-deep-review.md` C28).
+    public static var lastFailure: WorkspaceListingFailure? { workspaceListingFailure.get() }
+
     static func contents(of folder: URL) -> [URL] {
-        (try? FileManager.default.contentsOfDirectory(at: folder,
-                                                      includingPropertiesForKeys: [.isRegularFileKey],
-                                                      options: [])) ?? []
+        do {
+            let urls = try FileManager.default.contentsOfDirectory(at: folder,
+                                                                   includingPropertiesForKeys: [.isRegularFileKey],
+                                                                   options: [])
+            workspaceListingFailure.set(nil)
+            return urls
+        } catch {
+            workspaceListingFailure.set(WorkspaceListingFailure(folder: folder.path,
+                                                                message: failureMessage(for: error, folder: folder)))
+            return []
+        }
+    }
+
+    /// A message that says what to do about it, rather than the raw Cocoa error.
+    static func failureMessage(for error: Error, folder: URL) -> String {
+        let error = error as NSError
+        guard error.domain == NSCocoaErrorDomain else {
+            return "Could not list \(folder.path): \(error.localizedDescription)"
+        }
+        switch error.code {
+        case NSFileReadNoPermissionError:
+            return "OmGui is not allowed to read \(folder.path). "
+                + "Grant access in System Settings > Privacy & Security > Files and Folders, "
+                + "or choose a different working folder."
+        case NSFileReadNoSuchFileError, NSFileNoSuchFileError:
+            return "The working folder no longer exists: \(folder.path)"
+        default:
+            return "Could not list \(folder.path): \(error.localizedDescription)"
+        }
     }
 
     /// The Data Files tab. `showAll` is OMGUI's `*.*` filter; otherwise only `*.cwa`.

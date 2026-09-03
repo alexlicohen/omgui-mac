@@ -388,6 +388,7 @@ struct FilesTabView: View {
 
     private var dataFilesTab: some View {
         VStack(spacing: 0) {
+            WorkspaceListingNotice(folder: model.workspace)
             HStack(spacing: 6) {
                 // `toolStripFiles` — every item is live only while a file is selected
                 // (`filesListView_SelectedIndexChanged` / `FilesResetToolStripButtons`).
@@ -477,10 +478,45 @@ struct FilesTabView: View {
     // MARK: Output Files
 
     private var outputFilesTab: some View {
-        GroupedTableView(columns: FileColumns.output,
-                         sections: [GridSection(id: "output", title: "", rows: model.outputFiles.map(FileColumns.row))],
-                         selection: Binding(get: { model.selectedOutputPaths },
-                                            set: { model.selectedOutputPaths = $0 }))
+        VStack(spacing: 0) {
+            WorkspaceListingNotice(folder: model.workspace)
+            GroupedTableView(columns: FileColumns.output,
+                             sections: [GridSection(id: "output", title: "", rows: model.outputFiles.map(FileColumns.row))],
+                             selection: Binding(get: { model.selectedOutputPaths },
+                                                set: { model.selectedOutputPaths = $0 }))
+        }
+    }
+}
+
+/// Why the file lists are empty, when the folder could not be listed at all.
+///
+/// OMGUI has no equivalent because Windows has nothing like TCC: on macOS the default working
+/// folder is `~/Documents`, and a "Don't Allow" there leaves a listing that fails silently and a
+/// tab that looks like an empty folder (`refs/10-deep-review.md` C28).
+struct WorkspaceListingNotice: View {
+    let folder: URL
+
+    private var failure: WorkspaceListingFailure? {
+        guard let failure = WorkspaceListing.lastFailure, failure.folder == folder.path else { return nil }
+        return failure
+    }
+
+    var body: some View {
+        if let failure {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text(failure.message)
+                    .font(.system(size: 11))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(Color(nsColor: .underPageBackgroundColor))
+            Divider()
+        }
     }
 }
 

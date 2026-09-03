@@ -159,23 +159,16 @@ final class PluginHostTests: XCTestCase {
                        "?meta_weight=70&meta_site=left+wrist")
     }
 
-    /// `NewArgumentCreator` — `<parameters>?<output name>`, with the first CWA prepended, quoted.
+    /// `NewArgumentCreator` — `<parameters>?<output name>`. The page's own text and nothing else:
+    /// the input path is an argv entry `invocation` prepends, never text to be re-split (C41).
     func testArgumentsFromTheFragment() throws {
         var plugin = PluginDescriptor()
         plugin.readableName = "OMConvert"
         let result = try XCTUnwrap(PluginHost.arguments(fromFragment: "\"\"?\"\"",
                                                         plugin: plugin,
                                                         inputs: ["/w/a.cwa"]))
-        XCTAssertEqual(result.parameterString, "\"/w/a.cwa\" \"\"")
+        XCTAssertEqual(result.parameterString, "\"\"")
         XCTAssertEqual(result.outputName, "\"\"")
-    }
-
-    func testClimbAxIsTheOneNamePluginThatIsNotGivenItsInput() throws {
-        var plugin = PluginDescriptor()
-        plugin.readableName = "ClimbAx"
-        let result = try XCTUnwrap(PluginHost.arguments(fromFragment: "-x 1?out.csv",
-                                                        plugin: plugin, inputs: ["/w/a.cwa"]))
-        XCTAssertEqual(result.parameterString, "-x 1")
     }
 
     func testAFragmentWithoutTheOutputSeparatorIsRejected() {
@@ -191,7 +184,7 @@ final class PluginHostTests: XCTestCase {
         plugin.runFilePath = "run.sh"
         plugin.folder = URL(fileURLWithPath: "/plugins/Thing", isDirectory: true)
         let invocation = PluginHost.invocation(plugin: plugin,
-                                               parameterString: "\"/w/a.cwa\" -o report.csv",
+                                               parameterString: "-o report.csv",
                                                outputName: "report.csv",
                                                workingFolder: URL(fileURLWithPath: "/work"),
                                                inputs: ["/w/a.cwa"])
@@ -201,6 +194,21 @@ final class PluginHostTests: XCTestCase {
         XCTAssertEqual(invocation.workingDirectory, "/plugins/Thing")
     }
 
+    /// ClimbAx is upstream's one hard-coded exception: it is not handed its input file.
+    func testClimbAxIsTheOnePluginThatIsNotGivenItsInput() {
+        var plugin = PluginDescriptor()
+        plugin.readableName = "ClimbAx"
+        plugin.runFilePath = "run.sh"
+        plugin.folder = URL(fileURLWithPath: "/plugins/ClimbAx", isDirectory: true)
+        let invocation = PluginHost.invocation(plugin: plugin,
+                                               parameterString: "-x 1",
+                                               outputName: "out.csv",
+                                               workingFolder: URL(fileURLWithPath: "/work"),
+                                               inputs: ["/w/a.cwa"])
+        XCTAssertEqual(invocation.arguments, ["-x", "1"])
+        XCTAssertEqual(invocation.finalPath, "/work/out.csv")
+    }
+
     /// OMConvert asks for no output file; upstream's substitution would mangle the quoting, so the
     /// port leaves the command line alone and the source file stands as the job's output.
     func testInvocationWithNoOutputName() {
@@ -208,7 +216,7 @@ final class PluginHostTests: XCTestCase {
         plugin.runFilePath = "run-omconvert.sh"
         plugin.folder = URL(fileURLWithPath: "/plugins/OmConvertPlugin", isDirectory: true)
         let invocation = PluginHost.invocation(plugin: plugin,
-                                               parameterString: "\"/w/a.cwa\" \"\"",
+                                               parameterString: "\"\"",
                                                outputName: "\"\"",
                                                workingFolder: URL(fileURLWithPath: "/work"),
                                                inputs: ["/w/a.cwa"])
@@ -216,10 +224,171 @@ final class PluginHostTests: XCTestCase {
         XCTAssertEqual(invocation.finalPath, "/w/a.cwa")
     }
 
+    // MARK: - Paths the host contributes are argv entries, never text (C25/C41)
+
+    /// A `.cwa` whose name contains a quote (a Finder rename; download names are sanitised) used to
+    /// splice extra argv entries into the plugin's command line.
+    func testAFileNameContainingAQuoteIsOneArgument() throws {
+        var plugin = PluginDescriptor()
+        plugin.readableName = "Thing"
+        plugin.runFilePath = "run.sh"
+        plugin.folder = URL(fileURLWithPath: "/plugins/Thing", isDirectory: true)
+        let input = "/w/pilot \"2\" data.cwa"
+
+        let fragment = try XCTUnwrap(PluginHost.arguments(fromFragment: "-x 1 -o out.csv?out.csv",
+                                                          plugin: plugin, inputs: [input]))
+        let invocation = PluginHost.invocation(plugin: plugin,
+                                               parameterString: fragment.parameterString,
+                                               outputName: fragment.outputName,
+                                               workingFolder: URL(fileURLWithPath: "/work"),
+                                               inputs: [input])
+        XCTAssertEqual(invocation.arguments, [input, "-x", "1", "-o", "/work/out.csv"],
+                       "the path is one argv entry, quotes and all")
+        XCTAssertEqual(invocation.inputPath, input)
+    }
+
+    /// The same for the output side: a workspace folder containing a quote used to be re-quoted
+    /// into the command line and split again, which dropped the quotes and lost the directory.
+    func testAWorkingFolderContainingAQuoteKeepsTheOutputPath() {
+        var plugin = PluginDescriptor()
+        plugin.readableName = "Thing"
+        plugin.runFilePath = "run.sh"
+        plugin.folder = URL(fileURLWithPath: "/plugins/Thing", isDirectory: true)
+        let workingFolder = URL(fileURLWithPath: "/Users/x/my \"pilot\" data", isDirectory: true)
+
+        let invocation = PluginHost.invocation(plugin: plugin,
+                                               parameterString: "-o out.csv",
+                                               outputName: "out.csv",
+                                               workingFolder: workingFolder,
+                                               inputs: ["/w/a.cwa"])
+        let expected = "/Users/x/my \"pilot\" data/out.csv"
+        XCTAssertEqual(invocation.arguments, ["/w/a.cwa", "-o", expected])
+        XCTAssertEqual(invocation.finalPath, expected,
+                       "the file the job looks for is the one the helper was told to write")
+    }
+
+    // MARK: - The run file (C24)
+
+    private func makePlugin(in folder: URL, runFilePath: String) -> PluginDescriptor {
+        var plugin = PluginDescriptor()
+        plugin.readableName = "Thing"
+        plugin.runFilePath = runFilePath
+        plugin.folder = folder
+        return plugin
+    }
+
+    private func scratchFolder() throws -> URL {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("plugin-run-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        return root
+    }
+
+    func testARunFileOutsideThePluginFolderIsRefused() throws {
+        let folder = try scratchFolder()
+        let plugin = makePlugin(in: folder, runFilePath: "../../../../../usr/bin/osascript")
+        XCTAssertFalse(plugin.isInsideFolder(plugin.runFileURL))
+        guard case .outsideFolder = try XCTUnwrap(plugin.runFileIssue()) else {
+            return XCTFail("expected an escape to be refused, got \(String(describing: plugin.runFileIssue()))")
+        }
+        // And the refusal reaches the process runner rather than spawning osascript.
+        let invocation = PluginHost.invocation(plugin: plugin,
+                                               parameterString: "tell application \"Finder\"",
+                                               outputName: "",
+                                               workingFolder: folder,
+                                               inputs: ["/w/a.cwa"])
+        let refusal = try XCTUnwrap(invocation.refusal)
+        XCTAssertTrue(refusal.contains("only run a program inside its own folder"), refusal)
+
+        let log = ProgressCollector.Lines()
+        let result = ToolProcess().run(invocation,
+                                       executable: URL(fileURLWithPath: "/usr/bin/osascript"),
+                                       onOutput: { line in log.append(line) })
+        XCTAssertFalse(result.succeeded)
+        XCTAssertEqual(result.errorMessage, refusal)
+        XCTAssertTrue(log.all.contains { $0.hasPrefix("<<<ERROR:") }, log.all.joined(separator: "\n"))
+    }
+
+    func testAMissingOrUnexecutableRunFileIsRefused() throws {
+        let folder = try scratchFolder()
+        let missing = makePlugin(in: folder, runFilePath: "run.sh")
+        guard case .missing = try XCTUnwrap(missing.runFileIssue()) else {
+            return XCTFail("expected a missing run file to be refused")
+        }
+
+        let script = folder.appendingPathComponent("run.sh")
+        try "#!/bin/sh\nexit 0\n".write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: script.path)
+        guard case .notExecutable = try XCTUnwrap(missing.runFileIssue()) else {
+            return XCTFail("expected a non-executable run file to be refused")
+        }
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        XCTAssertNil(missing.runFileIssue(), "an executable file inside the folder is fine")
+        XCTAssertNil(PluginHost.invocation(plugin: missing, parameterString: "", outputName: "",
+                                           workingFolder: folder, inputs: []).refusal)
+    }
+
+    func testADescriptorWithNoRunFileIsRefused() throws {
+        let folder = try scratchFolder()
+        XCTAssertEqual(makePlugin(in: folder, runFilePath: "none").runFileIssue(), .notSpecified)
+    }
+
+    func testAQuarantinedRunFileIsRefusedOutsideTheAppBundle() throws {
+        let folder = try scratchFolder()
+        let script = folder.appendingPathComponent("run.sh")
+        try "#!/bin/sh\nexit 0\n".write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let plugin = makePlugin(in: folder, runFilePath: "run.sh")
+        XCTAssertNil(plugin.runFileIssue())
+
+        // What LaunchServices would have stopped, had the child been launched through it.
+        let quarantine = Process()
+        quarantine.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
+        quarantine.arguments = ["-w", "com.apple.quarantine",
+                                "0081;00000000;OmGuiTests;", script.path]
+        try quarantine.run()
+        quarantine.waitUntilExit()
+        try XCTSkipUnless(quarantine.terminationStatus == 0, "could not set com.apple.quarantine")
+
+        guard case .quarantined = try XCTUnwrap(plugin.runFileIssue()) else {
+            return XCTFail("expected a quarantined run file to be refused")
+        }
+        // A plugin shipped inside the app bundle is exempt: the whole bundle carries the flag once
+        // it has been downloaded, and it has already been through notarisation.
+        let ownBundle = Bundle(url: folder) ?? Bundle.main
+        if ownBundle.bundleURL == folder {
+            XCTAssertNil(plugin.runFileIssue(bundle: ownBundle))
+        }
+    }
+
+    func testTheShippedPluginIsRunnable() throws {
+        let plugin = try XCTUnwrap(PluginDescriptor.load(from: PluginHostTests.portedPluginFolder))
+        XCTAssertNil(plugin.runFileIssue(), "the plugin the app ships must pass its own check")
+    }
+
     func testCommandLineSplitting() {
         XCTAssertEqual(PluginHost.splitCommandLine("\"/a b/c.cwa\" -x 1"), ["/a b/c.cwa", "-x", "1"])
         XCTAssertEqual(PluginHost.splitCommandLine("  a   b  "), ["a", "b"])
         XCTAssertEqual(PluginHost.splitCommandLine("\"\""), [""])
         XCTAssertEqual(PluginHost.splitCommandLine(""), [])
+    }
+}
+
+extension ProgressCollector {
+    /// A thread-safe line sink for the helper transcript, which arrives on a pipe queue.
+    final class Lines: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [String] = []
+
+        func append(_ line: String) {
+            lock.lock(); storage.append(line); lock.unlock()
+        }
+
+        var all: [String] {
+            lock.lock(); defer { lock.unlock() }
+            return storage
+        }
     }
 }

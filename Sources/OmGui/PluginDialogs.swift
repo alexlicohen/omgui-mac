@@ -32,6 +32,21 @@ struct PluginsSheet: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
 
+                // The run file is checked here as well as before the spawn, so a plugin that
+                // cannot be launched says why instead of opening its form and failing at the end
+                // (`refs/10-deep-review.md` C24).
+                if let issue = context.selected.runFileIssue() {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Text(issue.message)
+                            .font(.system(size: 10))
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+
                 Divider()
                 HStack {
                     Button("Refresh") { model.showPlugins() }
@@ -40,6 +55,7 @@ struct PluginsSheet: View {
                         .keyboardShortcut(.cancelAction)
                     Button("Run...") { model.runPlugin(context) }
                         .keyboardShortcut(.defaultAction)
+                        .disabled(context.selected.runFileIssue() != nil)
                 }
             }
             .padding(16)

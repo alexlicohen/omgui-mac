@@ -64,6 +64,15 @@ public final class ToolProcess: @unchecked Sendable {
         // `AppendText("<<<START: " + FileName + " " + Arguments + ">>>\n")`.
         onOutput("<<<START: \(executable.path) \(invocation.commandLine)>>>")
 
+        // A refused invocation never reaches `Process`: the check that produced the refusal is the
+        // one macOS would have made had the child been launched through LaunchServices.
+        if let refusal = invocation.refusal {
+            onOutput("<<<ERROR: \(refusal)>>>")
+            onOutput("<<<FAILED>>>")
+            result.errorMessage = refusal
+            return result
+        }
+
         lock.lock()
         if cancelRequested {
             lock.unlock()

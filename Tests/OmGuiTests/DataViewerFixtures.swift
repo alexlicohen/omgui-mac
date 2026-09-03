@@ -21,12 +21,19 @@ struct SyntheticCwa {
 
     /// Block `k` starts at `base + k * samplesPerBlock / rate`, plus `gapSeconds` once `k` passes
     /// `gapAfterBlock` — which is how a recording with a hole in it is built.
+    ///
+    /// `clockJumpAfterBlock`/`jumpSeconds` is the other way a device's timeline breaks: the RTC
+    /// itself moves, so every block after the jump is stamped `jumpSeconds` away from where the
+    /// sample stream says it belongs. A negative jump puts blocks before the file's own start; a
+    /// large positive one puts them years past its end.
     static func write(blocks: Int,
                       hardware: CwaWriter.HardwareType = .ax3,
                       config: AccelConfig = AccelConfig(rate: .hz100, range: .g8),
                       start: OmDateTime,
                       gapAfterBlock: Int = .max,
                       gapSeconds: Double = 0,
+                      clockJumpAfterBlock: Int = .max,
+                      jumpSeconds: Double = 0,
                       values: (Int) -> BlockValues) -> (url: URL, blockDuration: Double, blockStart: (Int) -> Double) {
         var writer = CwaWriter(hardware: hardware, deviceId: 4242, sessionId: 7, config: config)
         let axes = config.axisCount
@@ -34,7 +41,9 @@ struct SyntheticCwa {
         let rate = config.rate.hz
         let blockDuration = Double(perBlock) / rate
         let blockStart: (Int) -> Double = { k in
-            Double(k) * blockDuration + (k > gapAfterBlock ? gapSeconds : 0)
+            Double(k) * blockDuration
+                + (k > gapAfterBlock ? gapSeconds : 0)
+                + (k > clockJumpAfterBlock ? jumpSeconds : 0)
         }
 
         var data = Data(writer.headerBlock())
