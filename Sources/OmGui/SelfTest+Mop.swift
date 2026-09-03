@@ -5,10 +5,10 @@ import OmGuiCore
 
 /// The MOP-alignment half of `--self-test`.
 ///
-/// Two jobs: assert the things `refs/08-aria-mop-omgui-steps.md` pins down that only the running
+/// Two jobs: assert the things the study's MOP-alignment steps pin down that only the running
 /// window can show (the title, the "Default" group header, an un-truncated 7-digit device ID, the
-/// Record-disabled-with-data rule, the toolbar icons), and capture the screenshots
-/// `docs/SOP-mac.md` embeds.
+/// Record-disabled-with-data rule, the toolbar icons), and capture the screenshots the study's
+/// SOP document embeds.
 extension SelfTest {
 
     /// The text of the device table as the window actually renders it: `[Group]` rows and the
@@ -61,7 +61,7 @@ extension SelfTest {
         return (needed <= column.width, needed, column.width)
     }
 
-    /// Everything in `refs/08` items 1-3, 6 and 9 that needs the running window.
+    /// Everything in the study's MOP-alignment steps that needs the running window.
     @MainActor
     static func checkMopAlignment(model: AppModel,
                                   say: @MainActor (String) -> Void,
@@ -116,7 +116,7 @@ extension SelfTest {
         }
     }
 
-    /// The screenshots `docs/SOP-mac.md` embeds, captured from the real window before anything
+    /// The screenshots the study's SOP document embeds, captured from the real window before anything
     /// else in the run has touched the devices.
     ///
     /// It configures a recording on the MOP's device and stops it again, so the rest of the
@@ -195,7 +195,7 @@ extension SelfTest {
         await pause(0.6)
         model.rebuildRows()
 
-        // 8. The Form 2 line, in the Log pane and the status bar.
+        // 8. The configuration confirmation line, in the Log pane and the status bar.
         model.showLog = true
         await pause(0.4)
         let expected = "Recording configured on \(MockDeviceCatalog.mopDeviceId): session 1042, "

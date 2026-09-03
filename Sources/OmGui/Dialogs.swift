@@ -99,7 +99,7 @@ struct AboutView: View {
     /// The one deliberate behavioural deviation a site can see, so it is documented in the app and
     /// not only in `refs/09-mop-alignment-notes.md`.
     static let profileNote = """
-    Recording Settings opens at 100 Hz, \u{00B1}16 g, Gyro (disabled), Immediately on Disconnect the first time a workspace is used (ARIA Wearables MOP \u{00A7}9.4.2). OMGUI's own default range is \u{00B1}8 g; the "Defaults" button still restores 100 Hz / \u{00B1}8 g. Once a recording has been configured, the workspace's recordSetup.xml is what the dialog reopens with.
+    Recording Settings opens at 100 Hz, \u{00B1}16 g, Gyro (disabled), Immediately on Disconnect the first time a workspace is used (the study default profile). OMGUI's own default range is \u{00B1}8 g; the "Defaults" button still restores 100 Hz / \u{00B1}8 g. Once a recording has been configured, the workspace's recordSetup.xml is what the dialog reopens with.
     """
 
     static var version: String {

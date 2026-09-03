@@ -3,7 +3,7 @@ import OmApi
 
 /// The fake devices `--mock` shows.
 ///
-/// The IDs, battery and session values are the ARIA MOP's, so a screenshot taken in mock mode
+/// The IDs, battery and session values are the study MOP's, so a screenshot taken in mock mode
 /// reads like the MOP's own OMGUI screenshots (device `6036222`, 93 %, session 0, "Stopped").
 /// They live here rather than in `MockBackend.Spec.defaults` because `Sources/OmApi` is the device
 /// layer and its own defaults are what the `OmApi` tests are written against.
@@ -39,8 +39,8 @@ public enum MockDeviceCatalog {
                          firmware: 53, hardware: 100,
                          config: AccelConfig(rate: .hz100, range: .g16, gyro: nil),
                          metadata: MetadataTools.create([
-                            .init("_c", "Boston Children's"),
-                            .init("_s", "ARIA-IMPACT"),
+                            .init("_c", "Example Children's Hospital"),
+                            .init("_s", "STUDY-DEMO"),
                             .init("_sc", "P001"),
                             .init("_p", "left wrist"),
                          ]),

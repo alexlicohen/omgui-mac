@@ -312,10 +312,10 @@ final class RecordingSettingsTests: XCTestCase {
 
     func testMetadataUsesOmguiKeyOrder() {
         var model = settings()
-        model.metadata.studyCentre = "BCH"
-        model.metadata.studyCode = "ARIA"
+        model.metadata.studyCentre = "SITE1"
+        model.metadata.studyCode = "STUDY"
         model.metadata.subjectSite = "left wrist"
         model.metadata.subjectCode = "P001"
-        XCTAssertEqual(model.encodedMetadata, "_c=BCH&_s=ARIA&_p=left+wrist&_sc=P001")
+        XCTAssertEqual(model.encodedMetadata, "_c=SITE1&_s=STUDY&_p=left+wrist&_sc=P001")
     }
 }

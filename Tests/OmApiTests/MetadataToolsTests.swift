@@ -50,14 +50,14 @@ final class MetadataToolsTests: XCTestCase {
 
     func testCreateMetaDataHandTracedVector() {
         var metadata = StudyMetadata()
-        metadata.studyCentre = "Boston Children's"   // apostrophe -> %27, space -> '+'
+        metadata.studyCentre = "Example Children's Hospital"   // apostrophe -> %27, space -> '+'
         metadata.studyCode = "R&D"                   // '&' -> %26
         metadata.subjectSite = "left wrist"          // space -> '+'
         metadata.subjectCode = "Ann Müller"          // UTF-8 -> %C3%BC
         // Everything else stays empty and must be omitted (built-in '_' keys).
 
         XCTAssertEqual(metadata.encoded,
-                       "_c=Boston+Children%27s&_s=R%26D&_p=left+wrist&_sc=Ann+M%C3%BCller")
+                       "_c=Example+Children%27s+Hospital&_s=R%26D&_p=left+wrist&_sc=Ann+M%C3%BCller")
     }
 
     func testWhitespaceOnlyBuiltInValueIsOmitted() {
@@ -83,8 +83,8 @@ final class MetadataToolsTests: XCTestCase {
     }
 
     func testParseSeedsBasicSetAndDecodes() {
-        let map = MetadataTools.parse("_c=Boston+Children%27s&_s=R%26D&_p=left+wrist&_sc=Ann+M%C3%BCller")
-        XCTAssertEqual(map["_c"], "Boston Children's")
+        let map = MetadataTools.parse("_c=Example+Children%27s+Hospital&_s=R%26D&_p=left+wrist&_sc=Ann+M%C3%BCller")
+        XCTAssertEqual(map["_c"], "Example Children's Hospital")
         XCTAssertEqual(map["_s"], "R&D")
         XCTAssertEqual(map["_p"], "left wrist")
         XCTAssertEqual(map["_sc"], "Ann Müller")

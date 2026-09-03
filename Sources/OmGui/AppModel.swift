@@ -65,7 +65,7 @@ final class AppModel: ObservableObject {
     @Published var statusText = ""
     /// The last "Recording configured on ..." line, held in the status bar until the next device
     /// action (Download, Cancel, Clear, Stop or Record...) so it survives the disconnect and a site
-    /// can read the Form 2 date/time off the window as well as the Log.
+    /// can read the configuration date/time off the window as well as the Log.
     @Published private(set) var recordingConfirmation: String?
     @Published private(set) var progress: Double?
 
@@ -580,8 +580,8 @@ final class AppModel: ObservableObject {
         if let profile = RecordingProfile.load(from: workspace) {
             profile.apply(to: &settingsModel)
         } else {
-            // No per-workspace profile yet: start from the ARIA MOP's values rather than OMGUI's,
-            // so the only field a site has to touch is the Recording Session ID (MOP §9.4.2).
+            // No per-workspace profile yet: start from the study default profile rather than OMGUI's,
+            // so the only field a site has to touch is the Recording Session ID (per the study MOP).
             settingsModel.applyInitialProfile()
         }
         settingsModel.finishInitialisation()
@@ -606,7 +606,7 @@ final class AppModel: ObservableObject {
             // An unwritable -configlog path silently loses the AX3-CONFIG-OK/ERROR rows a site
             // files against the recording, so it gets the same warning the download log gets.
             if configLogFailed, let configLog { self.warnLogAppendFailed(configLog, kind: "configuration") }
-            // The line a site copies into Lasso Form 2 ("Date recording initiated in OMGUI").
+            // The line a site copies into their study's configuration form ("Date recording initiated in OMGUI").
             let now = Date()
             let confirmations = result.configured.map {
                 RecordFlow.confirmationLine(deviceId: $0, sessionId: settingsModel.sessionId, at: now)

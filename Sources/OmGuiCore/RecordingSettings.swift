@@ -137,8 +137,9 @@ public struct RecordingSettings: Sendable, Equatable {
         rangeIndex = 2
     }
 
-    /// The ARIA MOP's starting point, applied only when the workspace has no `recordSetup.xml`
-    /// yet: 100 Hz, ±16 g, gyro disabled, "Immediately on Disconnect" (MOP §9.4.2 step 4.2/4.3).
+    /// The study default profile's starting point, applied only when the workspace has no
+    /// `recordSetup.xml` yet: 100 Hz, ±16 g, gyro disabled, "Immediately on Disconnect" (per the
+    /// study MOP).
     ///
     /// A deliberate deviation from OMGUI, whose range default is ±8 g: it means a site only has to
     /// type the Recording Session ID. It is a *seed*, not a lock — the first OK writes

@@ -77,8 +77,8 @@ final class SettingsAndRowTests: XCTestCase {
         model.unpacked = true
         model.immediately = false
         model.setDuration(days: 2, hours: 3, minutes: 4)
-        model.metadata.studyCentre = "BCH"
-        model.metadata.studyCode = "ARIA"
+        model.metadata.studyCentre = "SITE1"
+        model.metadata.studyCode = "STUDY"
         model.metadata.subjectCode = "P001"
 
         let profile = RecordingProfile(capturing: model)
@@ -104,8 +104,8 @@ final class SettingsAndRowTests: XCTestCase {
         XCTAssertEqual(restored.durationDays, 2)
         XCTAssertEqual(restored.durationHours, 3)
         XCTAssertEqual(restored.durationMinutes, 4)
-        XCTAssertEqual(restored.metadata.studyCentre, "BCH")
-        XCTAssertEqual(restored.metadata.studyCode, "ARIA")
+        XCTAssertEqual(restored.metadata.studyCentre, "SITE1")
+        XCTAssertEqual(restored.metadata.studyCode, "STUDY")
         // Subject fields are saved but deliberately not restored (as in DateRangeForm.cs).
         XCTAssertEqual(restored.metadata.subjectCode, "")
     }

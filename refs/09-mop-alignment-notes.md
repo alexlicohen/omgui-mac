@@ -1,6 +1,6 @@
-# Phase 4 notes — matching the ARIA MOP's OMGUI
+# Phase 4 notes — matching the study MOP's OMGUI
 
-Spec: `refs/08-aria-mop-omgui-steps.md`. The upstream checkout in `upstream/openmovement` is
+Spec: the study's MOP-alignment steps document (removed from this tree). The upstream checkout in `upstream/openmovement` is
 `AssemblyVersion("1.0.0.45")` (`omgui/Properties/AssemblyInfo.cs:35`) — the same build the MOP's
 screenshots are of — so where the source and the MOP's description of a screenshot disagree, the
 source is the better witness to what V1.0.0.45 drew, not a rival to it. Each disagreement is
@@ -8,7 +8,7 @@ recorded below.
 
 ## What changed
 
-| refs/08 | Change | Where |
+| Step | Change | Where |
 |---|---|---|
 | 1 | One group header, "Default"; rows sorted by the Device column | `DeviceGroup`, `ContentView.deviceSections`, `AppModel.rebuildRows` |
 | 2 | Icons on all six device-toolbar buttons and all six Data Files buttons | `ToolbarIcon`, `ToolbarButton` |
@@ -19,7 +19,7 @@ recorded below.
 | 7 | (already correct) workspace defaults to `{MyDocuments}` | now covered by a test |
 | 8 | `Recording configured on <id>: session <n>, <yyyy-MM-dd HH:mm:ss>` in the Log and status bar | `RecordFlow.confirmationLine`, `AppModel.commitRecording` |
 | 9 | Mock devices 6036222/6036223/6036224; Device column widened to fit 7 digits | `MockDeviceCatalog`, `LaunchOptions.makeBackend`, `DeviceColumns` |
-| 10 | Stop → Download → select → Export ▸ Raw CSV → Output Files, driven end to end | `--self-test`, `docs/SOP-mac.md` §9.4.4 |
+| 10 | Stop → Download → select → Export ▸ Raw CSV → Output Files, driven end to end | `--self-test`, the study SOP document §9.4.4 |
 
 ## The "Default" group: source vs screenshot
 
@@ -47,15 +47,15 @@ Consequences taken:
 
 * **Double space in the title.** `MainForm.cs:2318` is
   `"Open Movement " + " [V" + version + "]"` — two spaces before the bracket. The MOP transcribes
-  one. Single space kept: it is what the screenshot reads and what `refs/08` specifies, and the
+  one. Single space kept: it is what the screenshot reads and what the study's MOP-alignment steps specify, and the
   extra space is plainly an upstream typo.
 * **The workspace in the title.** Upstream prints `Settings.Default.CurrentWorkingFolder`, which may
   still be the literal `{MyDocuments}` template. The port prints the *expanded* path, because the
   MOP screenshot shows a real path (`C:\Users\ERA EEG\Documents\`) and `{MyDocuments}` would tell a
   site nothing.
-* **"Gyro (dps)" vs "Gyro (±dps)".** `refs/08` writes the label without the ±;
+* **"Gyro (dps)" vs "Gyro (±dps)".** the study's MOP-alignment steps write the label without the ±;
   `DateRangeForm.Designer.cs:1024` is `"Gyro (±dps) "`. The designer wins — it *is* V1.0.0.45, and
-  the ± survives in `refs/08`'s transcription of the neighbouring "Range (±g)".
+  the ± survives in the study's transcription of the neighbouring "Range (±g)".
 * **`labelRateRangeSetting` reads "non-standard" at the MOP's settings.** It is blank only at
   exactly 100 Hz *and* ±8 g (`DateRangeForm.cs:808`); ±16 g falls through to the final `else`.
   Reproduced rather than suppressed, and called out in the SOP so a site does not read it as an
@@ -96,7 +96,7 @@ than in `swift test`, which has no window. The rest is `Tests/OmGuiTests/MopAlig
 
 `refs/screenshots/01-main-window.png` is shot once, *before* `captureSopImages` configures a
 recording on 6036222 (session 1042) -- an earlier re-shot after that step overwrote the frame, so
-the reference window disagreed with both the MOP's row and `docs/sop-images/sop-01-main-window.png`.
+the reference window disagreed with both the MOP's row and the study's SOP screenshot.
 The MOP row (`6036222 | 0 | 93% | | Stopped`) is now asserted at the moment the frame is captured,
 so the ordering cannot regress silently.
 
@@ -126,4 +126,4 @@ annotate.
    session id written into the CWA header, so it cannot take a non-numeric participant identifier.
    A site whose participant IDs are not numbers needs a mapping, or must use Subject ▸ Code.
 6. **The MOP's Windows paths and the `.exe`/.NET install text** are Windows-only by nature;
-   `docs/SOP-mac.md` replaces them rather than reconciling them.
+   the study's SOP document replaces them rather than reconciling them.

@@ -60,8 +60,8 @@ public final class MockBackend: DeviceBackend, @unchecked Sendable {
                  port: "/dev/cu.usbmodem-mock1234", battery: 87, sessionId: 1,
                  config: AccelConfig(rate: .hz100, range: .g8),
                  metadata: MetadataTools.create([
-                    .init("_c", "Boston Children's"),
-                    .init("_s", "ARIA-IMPACT"),
+                    .init("_c", "Example Children's Hospital"),
+                    .init("_s", "STUDY-DEMO"),
                     .init("_sc", "P001"),
                     .init("_p", "left wrist"),
                  ]),

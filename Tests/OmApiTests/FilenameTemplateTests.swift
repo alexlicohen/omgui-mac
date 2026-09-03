@@ -40,13 +40,13 @@ final class FilenameTemplateTests: XCTestCase {
     }
 
     func testMetadataPlaceholders() {
-        let metadata = ["SubjectCode": "P 01", "StudyCode": "R&D", "StudyCentre": "BCH"]
+        let metadata = ["SubjectCode": "P 01", "StudyCode": "R&D", "StudyCentre": "SITE1"]
         XCTAssertEqual(FilenameTemplate.expand("{SubjectCode}-{StudyCode}",
                                                deviceId: 1, sessionId: 1, metadata: metadata),
                        "P_01-R_D")
         XCTAssertEqual(FilenameTemplate.expand("{StudyCentre}_{DeviceId}",
                                                deviceId: 7, sessionId: 1, metadata: metadata),
-                       "BCH_00007")
+                       "SITE1_00007")
     }
 
     func testMissingBuiltInKeyBecomesEmpty() {

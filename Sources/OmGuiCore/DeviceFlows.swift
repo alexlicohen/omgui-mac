@@ -335,8 +335,8 @@ public enum RecordFlow {
         public var configured: [UInt32] = []
     }
 
-    /// The confirmation a site copies into Lasso Form 2 ("Date recording initiated in OMGUI",
-    /// ARIA MOP §9.4.2 step 4.4).
+    /// The confirmation a site copies into their study's data platform ("Date recording initiated
+    /// in OMGUI", per the study MOP).
     ///
     /// Not an upstream string: OMGUI logs only the `AX3-CONFIG-OK` CSV row, which is not something
     /// a site can read off the screen. This line goes to the Log pane and the status bar.

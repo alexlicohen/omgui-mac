@@ -3,7 +3,7 @@ import OmApi
 import OmGuiCore
 import XCTest
 
-/// The `refs/08-aria-mop-omgui-steps.md` requirements that can be asserted without a window.
+/// The study's MOP-alignment requirements that can be asserted without a window.
 ///
 /// The four that need the running app -- the title bar text, the "Default" header the outline view
 /// draws, the Device column width and the Record-disabled-with-data rule as the toolbar renders it
@@ -12,7 +12,7 @@ final class MopAlignmentTests: XCTestCase {
 
     private let noon = Date(timeIntervalSince1970: 1_800_000_000)
 
-    // MARK: - refs/08 item 3: the window title
+    // MARK: - MOP-alignment item 3: the window title
 
     func testDefaultTitleTextMatchesMainForm() {
         XCTAssertEqual(AppInfo.defaultTitleText(version: "1.0.0.45"), "Open Movement [V1.0.0.45]")
@@ -36,7 +36,7 @@ final class MopAlignmentTests: XCTestCase {
                        AppInfo.packageVersion)
     }
 
-    // MARK: - refs/08 item 1: the group header
+    // MARK: - MOP-alignment item 1: the group header
 
     func testTheDeviceListHasOneGroupCalledDefault() {
         XCTAssertEqual(DeviceGroup.defaultTitle, "Default")
@@ -47,7 +47,7 @@ final class MopAlignmentTests: XCTestCase {
                         "Standby", "Outbox", "Removed", "Files"])
     }
 
-    // MARK: - refs/08 item 5: the initial recording profile
+    // MARK: - MOP-alignment item 5: the initial recording profile
 
     func testAFreshWorkspaceStartsAtTheMopValues() {
         var model = RecordingSettings(devices: [.ax6()], now: noon)
@@ -87,7 +87,7 @@ final class MopAlignmentTests: XCTestCase {
         XCTAssertEqual(reopened.accelRange, .g4)
     }
 
-    // MARK: - refs/08 item 4: the warnings
+    // MARK: - MOP-alignment item 4: the warnings
 
     func testEveryWarningStringIsTheOneDateRangeFormUses() {
         XCTAssertEqual(RecordingSettings.warningMessages.count, 11)
@@ -130,7 +130,7 @@ final class MopAlignmentTests: XCTestCase {
         XCTAssertEqual(model.validate(now: noon).flags, [])
     }
 
-    // MARK: - refs/08 items 6 and 9: the device row and the toolbar
+    // MARK: - MOP-alignment items 6 and 9: the device row and the toolbar
 
     func testADeviceHoldingARecordingReadsStoppedWithData() {
         XCTAssertEqual(DeviceRow.recordingText(start: .infinite, stop: .infinite, hasData: false),
@@ -174,7 +174,7 @@ final class MopAlignmentTests: XCTestCase {
                        "6036222_0000000000")
     }
 
-    // MARK: - refs/08 item 8: the Form 2 line
+    // MARK: - MOP-alignment item 8: the configuration confirmation line
 
     func testTheRecordingConfirmationLine() {
         let when = Date(timeIntervalSince1970: 1_800_000_000)
@@ -187,7 +187,7 @@ final class MopAlignmentTests: XCTestCase {
                        "Recording configured on 6036222: session 42, " + formatter.string(from: when))
     }
 
-    // MARK: - refs/08 item 7: the default workspace
+    // MARK: - MOP-alignment item 7: the default workspace
 
     func testTheDefaultWorkspaceIsMyDocuments() {
         let defaults = UserDefaults(suiteName: "mop-workspace-\(UUID().uuidString)")!

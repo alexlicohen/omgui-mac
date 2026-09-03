@@ -101,7 +101,7 @@ final class DeviceFlowTests: XCTestCase {
         // The downloaded file is a real CWA carrying the device's metadata.
         let metadata = try XCTUnwrap(FileMetadata(path: final.path))
         XCTAssertEqual(metadata.deviceId, 1234)
-        XCTAssertEqual(metadata.named["StudyCode"], "ARIA-IMPACT")
+        XCTAssertEqual(metadata.named["StudyCode"], "STUDY-DEMO")
     }
 
     func testDownloadPromptsBeforeOverwritingAndRespectsCancel() throws {
@@ -272,7 +272,7 @@ final class DeviceFlowTests: XCTestCase {
         model.frequencyIndex = 4          // 200 Hz
         model.rangeIndex = 3              // 16 g
         model.flash = true
-        model.metadata.studyCode = "ARIA"
+        model.metadata.studyCode = "STUDY"
         model.metadata.subjectCode = "P042"
 
         let collector = ProgressCollector()
@@ -281,7 +281,7 @@ final class DeviceFlowTests: XCTestCase {
 
         XCTAssertTrue(result.failures.isEmpty, "\(result.failures)")
         XCTAssertEqual(device.sessionId, 4321)
-        XCTAssertEqual(try device.metadata(), "_s=ARIA&_sc=P042")
+        XCTAssertEqual(try device.metadata(), "_s=STUDY&_sc=P042")
         XCTAssertEqual(try device.accelConfig(), AccelConfig(rate: .hz200, range: .g16))
         XCTAssertEqual(try device.maxSamples(), 0)
         XCTAssertEqual(device.startTime, .zero)

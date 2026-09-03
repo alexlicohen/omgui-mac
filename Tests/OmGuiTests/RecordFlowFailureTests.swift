@@ -28,7 +28,7 @@ final class RecordFlowFailureTests: XCTestCase {
         var model = RecordingSettings(devices: [RecordingDeviceInfo(device: device)])
         model.finishInitialisation()
         model.sessionId = sessionId
-        model.metadata.studyCode = "ARIA"
+        model.metadata.studyCode = "STUDY"
         return model
     }
 

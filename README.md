@@ -9,7 +9,7 @@ This repository currently gives you a Swift package — `OmApi` — and a comman
 
 ## Why
 
-ARIA IMPACT sites have to configure AX6 watches, download `CWA-DATA.CWA`, and clear devices.
+Research study sites have to configure AX6 watches, download `CWA-DATA.CWA`, and clear devices.
 OMGUI is Windows-only, and none of the usual escape hatches work on an Apple Silicon Mac:
 containers have no USB passthrough on macOS, Wine does not emulate the WMI/SetupAPI pairing OMGUI
 uses to match a serial port to its mass-storage volume, and Rosetta 2 is going away after
@@ -21,8 +21,7 @@ the port links the same C library rather than reimplementing the serial protocol
 arm64 builds of the same helper binaries. Behaviour matches OMGUI because it is largely the same
 code underneath.
 
-See `refs/00-plan.md` for the full plan and `refs/03-omgui-ui-inventory.md` for the OMGUI feature
-inventory the port is measured against.
+See `refs/03-omgui-ui-inventory.md` for the OMGUI feature inventory the port is measured against.
 
 ## Layout
 
@@ -92,7 +91,7 @@ Exit codes: `0` success, `1` usage error, `2` no devices found, `3` operation fa
 
 ```sh
 swift run omgui-cli record --mock --session 42 --rate 100 --range 8 --gyro 2000 \
-    StudyCode=ARIA-IMPACT SubjectCode=P001 SubjectSite="left wrist"
+    StudyCode=EXAMPLE-STUDY SubjectCode=P001 SubjectSite="left wrist"
 swift run omgui-cli download --mock --workspace ~/Desktop/cwa
 ```
 

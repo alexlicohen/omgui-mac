@@ -91,7 +91,7 @@ final class CwaFileTests: XCTestCase {
     }
 
     func testReaderParsesAnAX3File() throws {
-        let metadata = MetadataTools.create([.init("_s", "ARIA"), .init("_sc", "P 001")])
+        let metadata = MetadataTools.create([.init("_s", "STUDY"), .init("_sc", "P 001")])
         let writer = CwaWriter(hardware: .ax3, deviceId: 1234, sessionId: 9,
                                config: AccelConfig(rate: .hz100, range: .g8),
                                metadata: metadata, battery: 168, light: 300, temperature: 256)
@@ -105,7 +105,7 @@ final class CwaFileTests: XCTestCase {
         XCTAssertEqual(reader.dataOffsetBlocks, 2, "the 1024-byte header is two blocks")
         XCTAssertEqual(reader.dataNumBlocks, 10)
         XCTAssertEqual(reader.metadata, metadata)
-        XCTAssertEqual(reader.studyMetadata.studyCode, "ARIA")
+        XCTAssertEqual(reader.studyMetadata.studyCode, "STUDY")
         XCTAssertEqual(reader.studyMetadata.subjectCode, "P 001")
         XCTAssertEqual(reader.startTime, start)
 
@@ -203,7 +203,7 @@ final class CwaFileTests: XCTestCase {
         XCTAssertEqual(reader.deviceId, device.deviceId)
         XCTAssertEqual(reader.sessionId, device.sessionId)
         XCTAssertEqual(reader.dataNumBlocks, 24)
-        XCTAssertEqual(reader.studyMetadata.studyCode, "ARIA-IMPACT")
+        XCTAssertEqual(reader.studyMetadata.studyCode, "STUDY-DEMO")
         XCTAssertEqual(reader.studyMetadata.subjectSite, "left wrist")
         let blocks = reader.readAllBlocks()
         XCTAssertEqual(blocks.count, 24)

@@ -123,7 +123,7 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertEqual(metadata.sessionIdText, "0000000001")
         XCTAssertEqual(metadata.samplingRate, 100)
         XCTAssertEqual(metadata.samplingRange, 8)
-        XCTAssertEqual(metadata.named["StudyCode"], "ARIA-IMPACT")
+        XCTAssertEqual(metadata.named["StudyCode"], "STUDY-DEMO")
         XCTAssertEqual(metadata.named["SubjectSite"], "left wrist")
     }
 

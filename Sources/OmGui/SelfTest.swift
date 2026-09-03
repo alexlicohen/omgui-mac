@@ -98,7 +98,7 @@ enum SelfTest {
             say("splits: " + splitOutline())
             await shot("01-main-window.png")
 
-            // --- refs/08: the MOP alignment checks and the SOP screenshots --------------------
+            // --- the study's MOP alignment checks and SOP screenshots -------------------------
             SelfTest.checkMopAlignment(model: model, say: say, expect: expect)
             // NB: this runs a Record on 6036222 (session 1042), so it must not be followed by a
             // re-shot of 01-main-window.png -- that reference frame is the MOP's own row
@@ -183,7 +183,7 @@ enum SelfTest {
                 await shot("06-recording-settings.png")
 
                 context.settings.sessionId = 4321
-                context.settings.metadata.studyCode = "ARIA-IMPACT"
+                context.settings.metadata.studyCode = "STUDY-DEMO"
                 context.settings.metadata.subjectCode = "P042"
                 context.settings.metadata.subjectSite = "left wrist"
                 model.commitRecording(context.settings, devices: context.devices)

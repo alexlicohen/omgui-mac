@@ -47,7 +47,7 @@ final class MockFlowTests: XCTestCase {
         XCTAssertEqual(device.category, .standby)
 
         var metadata = StudyMetadata()
-        metadata.studyCode = "ARIA"
+        metadata.studyCode = "STUDY"
         metadata.subjectCode = "P 002"
 
         XCTAssertTrue(device.setSessionId(42, commit: false))
@@ -66,7 +66,7 @@ final class MockFlowTests: XCTestCase {
         XCTAssertEqual(try device.accelConfig(), AccelConfig(rate: .hz50, range: .g4, gyro: .dps1000))
         XCTAssertEqual(try device.maxSamples(), 0)
         XCTAssertEqual(StudyMetadata(decoding: try device.metadata()).subjectCode, "P 002")
-        XCTAssertEqual(try device.metadata(), "_s=ARIA&_sc=P+002")
+        XCTAssertEqual(try device.metadata(), "_s=STUDY&_sc=P+002")
     }
 
     func testIntervalRecording() throws {

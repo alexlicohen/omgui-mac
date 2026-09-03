@@ -163,11 +163,12 @@ worth the diff before hardware testing.
    to state which sites should use.
 6. **Header parity.** The objective equivalence check is still a byte diff of an OMGUI-produced
    `.cwa` header against one this port produces for the same settings, via
-   `openmovement-python`'s `cwa_metadata.py` on both. Needs a sample file from the CCC.
+   `openmovement-python`'s `cwa_metadata.py` on both. Needs a sample file from the study's data
+   coordinating center.
 7. **AX6 firmware quirks.** `DateRangeForm` carries warnings for firmware ≤ 53 at 800–1600 Hz,
    for any rate above 1600 Hz with a gyro, and for gyro below 25 Hz. Those live in the UI layer
    and are not implemented yet — phase 2 must port them, and phase 5 should confirm the firmware
-   version the ARIA kits ship with.
+   version the study kits ship with.
 
 ## Test coverage
 

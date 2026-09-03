@@ -356,7 +356,7 @@ enum SyntheticPreview {
         // 25 Hz keeps a two-day file to ~27 MB while still being a rate the AX3 records at.
         let config = AccelConfig(rate: .hz25, range: .g8)
         var writer = CwaWriter(hardware: .ax3, deviceId: deviceId, sessionId: sessionId, config: config,
-                               metadata: MetadataTools.create([.init("_s", "ARIA-IMPACT"),
+                               metadata: MetadataTools.create([.init("_s", "STUDY-DEMO"),
                                                                .init("_sc", "P001")]))
         let perBlock = writer.samplesPerBlock
         let rate = config.rate.hz
