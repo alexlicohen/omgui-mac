@@ -125,6 +125,36 @@ final class FlowGuardTests: XCTestCase {
         XCTAssertTrue(DeviceToolbarState(selection: [DeviceRow(device: empty, timeCheck: true)]).clear)
     }
 
+    /// `omgui-cli clear --mock --all` — the whole stock selection, nothing configured first.
+    ///
+    /// The guard is only worth anything if a plain `--mock` run can reach it, so the mock ships a
+    /// device recording with data (`MockBackend.Spec.defaults`, id 7654). Select-all has to be
+    /// refused, naming that device and no other, and the toolbar has to grey Clear out for the same
+    /// selection.
+    func testTheStockMockSelectionIsRefusedByTheClearGuard() throws {
+        let harness = try GuiHarness()
+        defer { harness.tearDown() }
+        let devices = harness.api.devices
+        for device in devices { device.update(force: true) }
+
+        let unsafe = ClearGuard.recordingWithData(devices)
+        XCTAssertEqual(unsafe.map(\.deviceId), [7654],
+                       "a plain --mock run has to reach the guard, or nothing exercises it")
+        XCTAssertTrue(ClearGuard.refusalMessage(ids: unsafe.map { FilenameTemplate.deviceIdString($0.deviceId) })
+            .contains("07654"), "the refusal has to name the device the operator must look at")
+
+        let rows = devices.map { DeviceRow(device: $0, timeCheck: true) }
+        XCTAssertFalse(DeviceToolbarState(selection: rows).clear,
+                       "the GUI greys Clear out for this selection; the CLI refuses it")
+
+        // ...and it is that one device the refusal is about: drop it and the guard says nothing,
+        // and the stopped-with-data unit next to it is still clearable on its own.
+        let rest = devices.filter { $0.deviceId != 7654 }
+        XCTAssertTrue(ClearGuard.recordingWithData(rest).isEmpty)
+        let stoppedWithData = try XCTUnwrap(rest.first { $0.deviceId == 1234 })
+        XCTAssertTrue(DeviceToolbarState(selection: [DeviceRow(device: stoppedWithData, timeCheck: true)]).clear)
+    }
+
     // MARK: - The preflight both front ends run
 
     func testThePreflightRefusesADeviceOnBlacklistedFirmware() throws {

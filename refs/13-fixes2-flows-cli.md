@@ -45,6 +45,15 @@ and the toolbar cannot drift. `clear` refuses those devices by id before the con
 literally would also refuse a blank never-configured device, which is a normal thing to clear from
 a script and harmless.
 
+The mock had no device in that state, so nothing a `--mock` run could do reached the guard:
+`omgui-cli clear --mock --all --yes` erased all three fake devices and exited 0, and the first
+attempt demonstrated the refusal only by configuring a recording first. `MockBackend.Spec.defaults`
+now ships a fourth device, `07654` — an AX3 recording (`start .zero`/`stop .infinite`, OMGUI's
+"Always") with 12 blocks already on it, a participant's watch plugged in mid-wear. Stock
+`clear --mock --all --yes` is refused by id; `--force` clears all four. The `MockDeviceCatalog` the
+GUI uses is deliberately left alone — `--self-test` drives a select-all Clear and belongs to
+another task.
+
 **M2 — `omgui-cli download`.** Now calls `DownloadFlow.resolve`, so it gets the state guards, the
 unreadable-file case and both identity comparisons from one place. Both holes are closed: the
 `device.sessionId != .max` exemption (a failed SESSION read filed data under the *file's* session
@@ -117,21 +126,26 @@ the reason twice and named no file, on the one alert whose job is naming the fil
 
 ## Verification
 
-Run in an isolated `git archive HEAD` tree with only this task's files copied in — the shared
-checkout has another task's in-flight `Vendor/libomapi` work (and its own failing
-`LibOmapiDownloadProtocolTests`, which is theirs, not a regression here).
+Run in an isolated `git archive HEAD` tree with this task's files copied in — the shared checkout is
+worked by other tasks at the same time.
 
 - `swift build -c release` — clean.
-- `swift test` — 383 tests, 0 failures (363 before; +20). The 4 skips are environment-only
+- `swift test` — 390 tests, 0 failures (363 before; +27). The 4 skips are environment-only
   (`upstream/` is not in `git archive`, helper binaries not built in a scratch tree).
 - `.build/release/OmGui --mock --self-test` — exit 0, every CHECK ok, including
   "the device poll is blocked while a foreground flow runs" / "enabled again afterwards".
-- `swift run omgui-cli record --mock --device 1234 --session 5 --immediate` then
-  `swift run omgui-cli clear --mock --all --yes` → exit 3,
-  `ERROR 1 selected device(s) are recording and already hold data: 01234 …  Pass --force to erase
-  them anyway.`; the same command with `--force` clears all three and prints the read-back line.
+- `omgui-cli clear --mock --all --yes` on the stock mock → exit 3, `ERROR 1 selected device(s) are
+  recording and already hold data: 07654 …  Pass --force to erase them anyway.`; the same command
+  with `--force` → exit 0, all four wiped, each with its read-back line.
+- M4 is confirmed by mutation, not by reading: replacing the save/restore in `syncTime` with
+  upstream's bare `_warning = .none` makes `DeviceStateTests.testAFailedTimeSyncKeepsTheDeviceWarning`
+  fail at both failure paths — `("none") is not equal to ("damaged")`.
 - `omgui-cli download` against a corrupted `CWA-DATA.CWA` → `ERROR 01234: Device data file could not
   be read.` (it used to download and mis-name it); with `--force`, a warning and the download.
+
+The mock persists device state under `$TMPDIR/omgui-mac-mock`, so a `--force` clear leaves 07654
+wiped for the next run; `--mock-root DIR` (or deleting that directory) gives a run the stock
+fixture back.
 
 ## Not done, and why
 
@@ -139,6 +153,9 @@ checkout has another task's in-flight `Vendor/libomapi` work (and its own failin
   already greys the button out for those devices, and adding a second refusal inside the flow would
   fire in `--self-test`'s select-all Clear, which another task owns. `FlowGuardTests` asserts the
   two predicates agree, which is what keeps that true.
+- `omgui-cli record` still configures a device that already holds data, which the GUI's Record
+  button greys out (`record = data == 0`). The new mock device makes that visible, but it is not one
+  of this report's findings and Record's own state guard is not in scope here.
 - `refs/screenshots/self-test-transcript.txt` is not re-recorded here (M14, another task). This
   change adds Log lines — `Clear not started:` / `Record not started:` on a refusal — and, when a
   firmware version has not been read, one extra confirm to the prompt transcript.

@@ -16,7 +16,7 @@ final class MockFlowTests: XCTestCase {
     }
 
     func testStartupDiscoversEveryDevice() throws {
-        XCTAssertEqual(harness.api.devices.map(\.deviceId), [1234, 5678, 9999])
+        XCTAssertEqual(harness.api.devices.map(\.deviceId), [1234, 5678, 7654, 9999])
         XCTAssertTrue(harness.api.devices.allSatisfy(\.connected))
     }
 
@@ -29,6 +29,21 @@ final class MockFlowTests: XCTestCase {
         XCTAssertEqual(try harness.device(5678).category, .standby)
         // 9999: still charging.
         XCTAssertEqual(try harness.device(9999).category, .charging)
+        // 7654: recording, and already holding data -> grouped by its data, like 1234.
+        XCTAssertEqual(try harness.device(7654).strictCategory, .newData)
+    }
+
+    /// The stock mock has to contain the state Clear refuses, or no `--mock` run reaches the guard
+    /// (`refs/12-deep-review-2.md` H6). This is that fixture, asserted where it is defined.
+    func testTheStockMockShipsExactlyOneDeviceRecordingWithData() throws {
+        for device in harness.api.devices { device.update(force: true) }
+        let recordingWithData = harness.api.devices.filter { $0.isRecording != .stopped && $0.hasData }
+        XCTAssertEqual(recordingWithData.map(\.deviceId), [7654])
+
+        let device = try harness.device(7654)
+        XCTAssertEqual(device.isRecording, .always)
+        XCTAssertTrue(device.hasData)
+        XCTAssertEqual(device.recordingDescription, "Always (with data)")
     }
 
     func testRemovedDeviceIsCategorisedRemoved() throws {

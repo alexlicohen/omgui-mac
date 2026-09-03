@@ -53,8 +53,13 @@ public final class MockBackend: DeviceBackend, @unchecked Sendable {
             self.hardwareType = hardwareType
         }
 
-        /// Three devices covering the categories a UI needs to render: an AX3 holding data, a
-        /// charged AX6 with a gyro, and an AX3 still charging.
+        /// Four devices covering the states a UI has to render: an AX3 holding data, a charged AX6
+        /// with a gyro, an AX3 still charging, and an AX3 *recording with data already on it*.
+        ///
+        /// That last one is the state OMGUI's Clear button greys out and `ClearGuard` refuses
+        /// (`refs/12-deep-review-2.md` H6): a participant's watch plugged in mid-wear, where a
+        /// `FORMAT WC` destroys a recording in progress. Without a device in it, no `--mock` run —
+        /// `omgui-cli clear --mock --all` included — ever reaches the guard.
         public static let defaults: [Spec] = [
             Spec(deviceId: 1234, serialId: "CWA17_01234", volumeLabel: "AX317_01234",
                  port: "/dev/cu.usbmodem-mock1234", battery: 87, sessionId: 1,
@@ -78,6 +83,20 @@ public final class MockBackend: DeviceBackend, @unchecked Sendable {
             Spec(deviceId: 9999, serialId: "CWA17_09999", volumeLabel: "AX317_09999",
                  port: "/dev/cu.usbmodem-mock9999", battery: 42, charging: true, sessionId: 0,
                  dataBlocks: 0, hardwareType: .ax3),
+
+            // Recording (`start .zero`/`stop .infinite` is OMGUI's "Always") *and* holding data:
+            // the one selection Clear refuses without `--force`.
+            Spec(deviceId: 7654, serialId: "CWA17_07654", volumeLabel: "AX317_07654",
+                 port: "/dev/cu.usbmodem-mock7654", battery: 64, sessionId: 7,
+                 config: AccelConfig(rate: .hz100, range: .g8),
+                 metadata: MetadataTools.create([
+                    .init("_c", "Example Children's Hospital"),
+                    .init("_s", "STUDY-DEMO"),
+                    .init("_sc", "P002"),
+                    .init("_p", "right wrist"),
+                 ]),
+                 start: .zero, stop: .infinite,
+                 dataBlocks: 12, hardwareType: .ax3),
         ]
     }
 
