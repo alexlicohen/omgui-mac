@@ -28,10 +28,43 @@
 
 #include "omapi-internal.h"
 #include <sys/stat.h>
+#if !defined(_WIN32)
+#include <sys/time.h>       /* PATCH (omgui-mac) H3: gettimeofday() for the bounded join */
+#endif
 
 
 /** Download buffer size */
 #define OM_DOWNLOAD_BLOCK_SET (256)
+
+
+/* PATCH (omgui-mac) H1/H3: the download-thread liveness protocol.
+ *
+ * A separate mutex and condition variable, statically initialised and never destroyed.  Separate
+ * because om.downloadMutex is PTHREAD_MUTEX_RECURSIVE and waiting on a condition variable with a
+ * recursive mutex is undefined; statically initialised and never destroyed because the whole point
+ * of the protocol is to survive a shutdown that has given up on a thread -- an orphan must still be
+ * able to publish that it has let go of its OmDeviceState, and a mutex destroyed under it would be
+ * the very use-after-free this replaces.  It is one condition variable for all devices: waiters
+ * re-check their own device's downloadFinished flag.
+ */
+#if !defined(_WIN32)
+static pthread_mutex_t gDownloadDoneMutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t gDownloadDoneCond = PTHREAD_COND_INITIALIZER;
+#endif
+
+
+/** Publish that the download thread has stopped touching this OmDeviceState. */
+static void OmDownloadPublishFinished(OmDeviceState *device)
+{
+#if !defined(_WIN32)
+    pthread_mutex_lock(&gDownloadDoneMutex);
+    device->downloadFinished = 1;
+    pthread_cond_broadcast(&gDownloadDoneCond);
+    pthread_mutex_unlock(&gDownloadDoneMutex);
+#else
+    device->downloadFinished = 1;
+#endif
+}
 
 
 /** Internal method to update the download progress. */
@@ -141,12 +174,25 @@ static thread_return_t OmDownloadThread(void *arg)
     }
 
     // Close resources
+    //
+    // PATCH (omgui-mac) H1/H3: the streams are closed and cleared under om.downloadMutex, and
+    // OmDownloadRequestCancel() invalidates the source descriptor under the same mutex.  That
+    // pairing is what makes the cancel safe: while the canceller holds the mutex the FILE* it read
+    // cannot be closed underneath it, and while this epilogue holds it no cancel can be looking at
+    // a stream that is being torn down.  Clearing the pointers also removes the double fclose()
+    // that a second cancel used to cause.
     if (buffer != NULL) { free(buffer); }
-    if (deviceState->downloadSource != NULL) { fclose(deviceState->downloadSource); }
-    if (deviceState->downloadDest != NULL) { fclose(deviceState->downloadDest); }
+    mutex_lock(&om.downloadMutex);
+    if (deviceState->downloadSource != NULL) { fclose(deviceState->downloadSource); deviceState->downloadSource = NULL; }
+    if (deviceState->downloadDest != NULL) { fclose(deviceState->downloadDest); deviceState->downloadDest = NULL; }
+    mutex_unlock(&om.downloadMutex);
 
     // Update progress
     OmDoDownloadUpdate(deviceState->id, downloadStatus, downloadValue);
+
+    // PATCH (omgui-mac) H3: the last thing this thread does with `deviceState`.  A shutdown that
+    // has seen this flag may free the state immediately; nothing below may touch it again.
+    OmDownloadPublishFinished(deviceState);
 
     // Return
     return thread_return_value(0);
@@ -272,6 +318,20 @@ int OmBeginDownloadingReference(int deviceId, int dataOffsetBlocks, int dataLeng
         // Checks if we are already downloading, fails if a download is in progress
         if (device->downloadStatus == OM_DOWNLOAD_PROGRESS) { status = OM_E_NOT_VALID_STATE; break; }
 
+        // PATCH (omgui-mac) H1: reap the previous download thread here rather than overwriting --
+        // and permanently leaking -- its handle.  A download cancelled by a hot-unplug is
+        // deliberately not joined on the IOKit run-loop thread (see OmDownloadRequestCancel), so
+        // this is where that thread is collected; it has already published downloadFinished, so
+        // the join returns at once.  A thread that has *not* finished means the caller is racing
+        // its own download, which is refused rather than started twice.
+        if (device->downloadThreadActive)
+        {
+            if (!device->downloadFinished) { status = OM_E_NOT_VALID_STATE; break; }
+            if (device->downloadThread) { thread_join(device->downloadThread, NULL); }
+            device->downloadThread = 0;
+            device->downloadThreadActive = 0;
+        }
+
         // Sets the download status to not-started
         device->downloadStatus = OM_DOWNLOAD_NONE;
 
@@ -316,16 +376,50 @@ int OmBeginDownloadingReference(int deviceId, int dataOffsetBlocks, int dataLeng
         if (dataOffsetBlocks + device->downloadBlocksTotal > fileTotalBlocks) { fclose(device->downloadSource); device->downloadSource = NULL; status = OM_E_INVALID_ARG; break; }
 
         // Start the download thread
-        device->downloadBlocksCopied = 0;
-        device->downloadCancel = 0;
         device->downloadReference = reference;
         //OmDoDownloadUpdate(device->id, OM_DOWNLOAD_PROGRESS, 0);        // Removed - don't do an initial update here, one is done in OmDownloadThread anyway, and don't want to call out to user code with the download mutex held
-        thread_create(&device->downloadThread, NULL, OmDownloadThread, device);
-
-        status = OM_OK;
+        status = OmDownloadStartThread(device);     // PATCH (omgui-mac) H1/H3
+        if (OM_FAILED(status))
+        {
+            fclose(device->downloadSource); device->downloadSource = NULL;
+            if (device->downloadDest != NULL) { fclose(device->downloadDest); device->downloadDest = NULL; }
+            break;
+        }
     } while(0);
     mutex_unlock(&om.downloadMutex);        // Release download mutex after updating beginning download thread
 
+    return status;
+}
+
+
+/** PATCH (omgui-mac) H1/H3: the one place a download thread is created and its liveness protocol
+ *  armed.  `downloadFinished` has to be cleared before the thread exists, or a shutdown racing the
+ *  start could read a stale 1 left by the previous download and free the state under the new
+ *  thread.  Callers hold om.downloadMutex (it is recursive, so the lock here is free) and own the
+ *  source/destination streams on failure. */
+int OmDownloadStartThread(OmDeviceState *device)
+{
+    int status = OM_OK;
+    unsigned int deviceId;
+
+    if (device == NULL) { return OM_E_POINTER; }
+    deviceId = device->id;
+    (void)deviceId;             // referenced by the Win32 OM_DEBUG_MUTEX form of mutex_lock()
+
+    mutex_lock(&om.downloadMutex);
+    device->downloadBlocksCopied = 0;
+    device->downloadCancel = 0;
+    device->downloadFinished = 0;
+    if (thread_create(&device->downloadThread, NULL, OmDownloadThread, device) != 0)
+    {
+        device->downloadThread = 0;
+        status = OM_E_UNEXPECTED;
+    }
+    else
+    {
+        device->downloadThreadActive = 1;   // There is now a thread that has to be reaped
+    }
+    mutex_unlock(&om.downloadMutex);
     return status;
 }
 
@@ -390,7 +484,7 @@ int OmWaitForDownload(int deviceId, OM_DOWNLOAD_STATUS *downloadStatus, int *dow
         // Wait for download thread to terminate
         OmLog(3, "OmWaitForDownload() waiting for download thread to terminate...\n");
         thread_t thread = OmDownloadTakeThread(device, (unsigned int)deviceId);   // PATCH (omgui-mac) C3
-        if (thread) { thread_join(thread, NULL); }
+        if (thread) { thread_join(thread, NULL); device->downloadThreadActive = 0; }   // PATCH (omgui-mac) H1
     }
 
     // Check completed download state
@@ -421,33 +515,141 @@ int OmCancelDownload(int deviceId)
 }
 
 
-/** PATCH (omgui-mac) C3: internal cancel-and-join.
+/** PATCH (omgui-mac) H1/H2: ask a running download to stop, without waiting for it.
  *
- *  OmCancelDownload() -> OmWaitForDownload() -> OmQueryDownload() refuses a device that is not
- *  initialized and CONNECTED, which is exactly the state of a device being unplugged and of every
- *  device during OmShutdown() (which clears om.initialized before it walks the table).  Both
- *  paths therefore skipped the join and then freed the OmDeviceState the download thread was
- *  still reading through -- a use-after-free and a double fclose() on quit.  This variant takes
- *  the state directly and never consults either flag.
+ *  This is what the device-removal path calls.  It runs on the IOKit run-loop thread, where a join
+ *  is not merely slow but wrong: while that thread is blocked no attach or detach notification is
+ *  delivered and no CFRunLoopStop() is processed, so C3's unbounded join there turned an unplug
+ *  during a download into a wedged discovery thread and, on the following Cmd-Q, a free() under two
+ *  live threads.  The authoritative join lives in OmShutdown() (or in the next
+ *  OmBeginDownloading() for this device), never here.
+ *
+ *  Invalidating the source descriptor is what keeps that later join short.  The copy loop tests
+ *  downloadCancel once per block, so a cancel is only as prompt as the read in flight, and a read
+ *  from a volume that has just been yanked is the case that matters.  dup2()'ing /dev/null over the
+ *  descriptor makes every subsequent read report end-of-file, which the loop turns into a break,
+ *  and -- unlike fclose()ing the stream or close()ing the descriptor out from under a thread that
+ *  is inside fread() -- it neither tears down stdio state another thread owns nor frees a
+ *  descriptor number that could be reused.  om.downloadMutex is held so the stream cannot be closed
+ *  and cleared by the thread's own epilogue while we are reading it.
  */
-void OmDownloadCancelJoin(OmDeviceState *device)
+void OmDownloadRequestCancel(OmDeviceState *device)
 {
-    thread_t thread;
     unsigned int deviceId;
 
     if (device == NULL) { return; }
     deviceId = device->id;
 
+    mutex_lock(&om.downloadMutex);
     device->downloadCancel = 1;
+#if !defined(_WIN32)
+    if (device->downloadSource != NULL)
+    {
+        int sourceFd = fileno(device->downloadSource);
+        if (sourceFd >= 0)
+        {
+            int nullFd = open("/dev/null", O_RDONLY);
+            if (nullFd >= 0)
+            {
+                if (dup2(nullFd, sourceFd) < 0)
+                {
+                    OmLog(3, "OmDownloadRequestCancel(%u) could not invalidate the source.\n", deviceId);
+                }
+                close(nullFd);
+            }
+        }
+    }
+#endif
+    mutex_unlock(&om.downloadMutex);
+    OmLog(3, "OmDownloadRequestCancel(%u) requested.\n", deviceId);
+}
 
-    // The handle is taken under the download mutex but joined outside it: the download thread's
-    // own OmDoDownloadUpdate() takes the same mutex, so holding it across the join would deadlock.
+
+/** PATCH (omgui-mac) H3: bounded wait for the download thread to release the device state. */
+int OmDownloadWaitFinished(OmDeviceState *device, unsigned long timeoutMs)
+{
+    int finished;
+
+    if (device == NULL) { return 1; }
+#if !defined(_WIN32)
+    {
+        struct timeval now;
+        struct timespec deadline;
+
+        gettimeofday(&now, NULL);
+        deadline.tv_sec = now.tv_sec + (time_t)(timeoutMs / 1000);
+        deadline.tv_nsec = (long)now.tv_usec * 1000L + (long)(timeoutMs % 1000) * 1000000L;
+        while (deadline.tv_nsec >= 1000000000L) { deadline.tv_nsec -= 1000000000L; deadline.tv_sec++; }
+
+        pthread_mutex_lock(&gDownloadDoneMutex);
+        while (!device->downloadFinished)
+        {
+            if (pthread_cond_timedwait(&gDownloadDoneCond, &gDownloadDoneMutex, &deadline) == ETIMEDOUT) { break; }
+        }
+        finished = device->downloadFinished ? 1 : 0;
+        pthread_mutex_unlock(&gDownloadDoneMutex);
+    }
+#else
+    {
+        unsigned long waited;
+        for (waited = 0; !device->downloadFinished && waited < timeoutMs; waited += 10) { usleep(10 * 1000); }
+        finished = device->downloadFinished ? 1 : 0;
+    }
+#endif
+    return finished;
+}
+
+
+/** PATCH (omgui-mac) H1/H3: the one authoritative reap.
+ *
+ *  Darwin has no pthread_timedjoin_np(), so the bound is on the thread's own downloadFinished
+ *  publication rather than on the join: once that flag is up the thread has closed both streams,
+ *  delivered its final status and stopped touching the state, so the join that follows returns
+ *  immediately.  On timeout the thread is detached and zero returned -- the caller must leak this
+ *  OmDeviceState and must not destroy a mutex the orphan can still take.  Leaking a few kilobytes
+ *  on a quit that was already going wrong beats freeing memory under a live fread().
+ */
+int OmDownloadJoinBounded(OmDeviceState *device, unsigned long timeoutMs)
+{
+    thread_t thread;
+    unsigned int deviceId;
+
+    if (device == NULL) { return 1; }
+    if (!device->downloadThreadActive) { return 1; }        // No download thread to reap
+    deviceId = device->id;
+
+    // The handle is taken under the download mutex but waited on outside it: the download thread's
+    // own epilogue takes the same mutex, so holding it here would deadlock.
     thread = OmDownloadTakeThread(device, deviceId);
+
+    if (!OmDownloadWaitFinished(device, timeoutMs))
+    {
+        // The handle is released so the thread's resources come back when it eventually ends, but
+        // downloadThreadActive deliberately stays up: it means "a thread exists that has not
+        // published downloadFinished", so a later reap of the same state still refuses to declare
+        // it free-able rather than being fooled by an already-detached handle.
+        OmLog(0, "WARNING: Download thread for device %u did not stop in %lu ms; detaching it and leaking its state.\n", deviceId, timeoutMs);
+        if (thread) { thread_detach(thread); }
+        return 0;
+    }
+
     if (thread)
     {
-        OmLog(3, "OmDownloadCancelJoin(%u) joining download thread...\n", deviceId);
+        OmLog(3, "OmDownloadJoinBounded(%u) joining download thread...\n", deviceId);
         thread_join(thread, NULL);
     }
+    device->downloadThreadActive = 0;
+    return 1;
+}
+
+
+/** PATCH (omgui-mac) C3, superseded by H1/H3.  Kept as the single-call spelling for a caller that
+ *  is *not* on the discovery run-loop thread; the return value says whether the state may be
+ *  freed. */
+void OmDownloadCancelJoin(OmDeviceState *device)
+{
+    OmDownloadRequestCancel(device);
+    (void)OmDownloadJoinBounded(device, OM_DOWNLOAD_JOIN_TIMEOUT_MS);
 }
 
 

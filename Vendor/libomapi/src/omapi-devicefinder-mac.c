@@ -89,11 +89,59 @@ typedef struct DeviceData
 	unsigned int deviceId;
 	const char *mountPath;
 	const char *serialDevice;
+	struct DeviceData *next;		// PATCH (omgui-mac) L1: registry of the live records
 } DeviceData;
 
 static IONotificationPortRef gNotifyPort;
 static io_iterator_t gAddedIter;
 static CFRunLoopRef gRunLoop;
+
+// PATCH (omgui-mac) L1: every DeviceData is owned by the kIOGeneralInterest notification armed for
+// it and is released only inside DeviceNotification().  Stop() destroys the notification port,
+// after which that callback can never fire, so each stop/start cycle leaked one DeviceData and the
+// ~1.2 KB of strings it owns for every attached device.  They are chained here so Stop() can run
+// the same epilogue itself before the port goes.  The list is only ever touched from the discovery
+// run-loop thread (DeviceAdded and DeviceNotification both run on it) and from Stop() *after* that
+// thread has been joined, so it needs no lock -- and Stop() must not touch it at all on the path
+// where the thread was orphaned rather than joined.
+static DeviceData *gDeviceDataList;
+
+// PATCH (omgui-mac) H4: sticky once Stop() has given up on the discovery thread.  See
+// OmDeviceDiscoveryDetached() in omapi-internal.h.
+static volatile int gDiscoveryDetached;
+
+int OmDeviceDiscoveryDetached(void)
+{
+	return gDiscoveryDetached;
+}
+
+/** PATCH (omgui-mac) C6/C36/L1: the single release epilogue for a DeviceData, shared by the
+ *  removal notification, the DeviceAdded() failure path, and Stop().  Upstream leaked the
+ *  deviceName CFString, the device interface and all three heap strings on failure. */
+static void DeviceDataRelease(DeviceData *deviceData)
+{
+	if (deviceData == NULL) { return; }
+	if (deviceData->notification) { IOObjectRelease(deviceData->notification); }
+	if (deviceData->deviceName) { CFRelease(deviceData->deviceName); }
+	if (deviceData->deviceInterface)
+	{
+		(*deviceData->deviceInterface)->Release(deviceData->deviceInterface);
+	}
+	free((void *)deviceData->serialNumber);
+	free((void *)deviceData->mountPath);
+	free((void *)deviceData->serialDevice);
+	free(deviceData);
+}
+
+/** Take a registered DeviceData out of the list (no-op if it was never registered). */
+static void DeviceDataUnlink(DeviceData *deviceData)
+{
+	DeviceData **link;
+	for (link = &gDeviceDataList; *link != NULL; link = &(*link)->next)
+	{
+		if (*link == deviceData) { *link = deviceData->next; deviceData->next = NULL; return; }
+	}
+}
 
 // PATCH (omgui-mac): cfStringRefToCString() removed -- its only caller was the rewritten findMount().
 
@@ -404,19 +452,11 @@ static void DeviceNotification(void *refCon, io_service_t service, natural_t mes
 		// Call device removed
 		OmDeviceDiscovery(OM_DEVICE_REMOVED, deviceData->deviceId, deviceData->serialNumber, deviceData->serialDevice, deviceData->mountPath);
 
-		if (deviceData->deviceName) { CFRelease(deviceData->deviceName); }
-		if (deviceData->deviceInterface)
-		{
-			(*deviceData->deviceInterface)->Release(deviceData->deviceInterface);
-		}
-		IOObjectRelease(deviceData->notification);
-		// PATCH (omgui-mac) C36: upstream leaked all three of these strings on every detach
+		// PATCH (omgui-mac) C36/L1: upstream leaked all three heap strings on every detach
 		// (getUSBStringDescriptor() malloc()s, findMount() strdup()s, findSerial() malloc()s),
 		// i.e. ~1.2 KB per attach/detach cycle on the app's hot path.
-		free((void *)deviceData->serialNumber);
-		free((void *)deviceData->mountPath);
-		free((void *)deviceData->serialDevice);
-		free(deviceData);
+		DeviceDataUnlink(deviceData);
+		DeviceDataRelease(deviceData);
 	}
 }
 
@@ -548,6 +588,12 @@ static void DeviceAdded(void *refCon, io_iterator_t iterator)
 				break;
 			}
 
+			// PATCH (omgui-mac) L1: the record is now owned by the armed notification, so
+			// register it before handing control to user code -- Stop() releases whatever is
+			// still on this list when the notification port goes away.
+			deviceData->next = gDeviceDataList;
+			gDeviceDataList = deviceData;
+
 			// Call device connected
 			OmLog(2, "MAC: DEVICE: ... %s (#%u) port=%s path=%s\n", deviceData->serialNumber, deviceData->deviceId, deviceData->serialDevice, deviceData->mountPath);
 			OmDeviceDiscovery(OM_DEVICE_CONNECTED, deviceData->deviceId, deviceData->serialNumber, deviceData->serialDevice, deviceData->mountPath);
@@ -561,16 +607,7 @@ static void DeviceAdded(void *refCon, io_iterator_t iterator)
 			// PATCH (omgui-mac) C6/C36: explicit failure epilogue.  Upstream free()d the struct
 			// and leaked everything it owned -- the interest notification (see above), the
 			// deviceName CFString, the device interface, and the three heap strings.
-			if (deviceData->notification) { IOObjectRelease(deviceData->notification); }
-			if (deviceData->deviceName) { CFRelease(deviceData->deviceName); }
-			if (deviceData->deviceInterface)
-			{
-				(*deviceData->deviceInterface)->Release(deviceData->deviceInterface);
-			}
-			free((void *)deviceData->serialNumber);
-			free((void *)deviceData->mountPath);
-			free((void *)deviceData->serialDevice);
-			free(deviceData);
+			DeviceDataRelease(deviceData);
 		}
 
 		// Release IOIteratorNext reference
@@ -582,8 +619,13 @@ static void DeviceAdded(void *refCon, io_iterator_t iterator)
 static volatile int gStarted = 0;
 static volatile int gFinished = 0;      // PATCH (omgui-mac) C17: set when the thread has returned
 static volatile int gThreadValid = 0;   // PATCH (omgui-mac) C17: om.discoveryThread is joinable
-static pthread_mutex_t gStartMutex;
-static pthread_cond_t gStartCond;
+
+// PATCH (omgui-mac) M1: statically initialised, and never re-initialised or destroyed.  C17
+// re-ran pthread_mutex_init()/pthread_cond_init() on these same statics at the top of every
+// OmDeviceDiscoveryStart(), which is undefined behaviour on a mutex that is already initialised
+// and, after an H4 detach, on one an orphaned thread is still locking from OmDiscoverySignal().
+static pthread_mutex_t gStartMutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t gStartCond = PTHREAD_COND_INITIALIZER;
 
 /** PATCH (omgui-mac) C17: publish a discovery-thread lifecycle change. */
 static void OmDiscoverySignal(int started, int finished)
@@ -679,14 +721,24 @@ static thread_return_t OmDeviceDiscoveryThread(void *arg)
 /** Internal method to start device discovery. */
 void OmDeviceDiscoveryStart(void)
 {
+	// PATCH (omgui-mac) M1/H4: an orphaned discovery thread from a previous cycle still owns the
+	// notify port and still signals gStarted/gFinished, which are single global slots.  Starting a
+	// second thread over them makes the new Start() return before its run loop is up and the next
+	// Stop() skip every CFRunLoopStop() and then join a running loop -- a permanent hang, i.e. the
+	// exact bug C17 exists to remove.  Discovery is refused instead: the app keeps working with
+	// whatever it has, rather than deadlocking on quit.
+	if (gDiscoveryDetached)
+	{
+		OmLog(0, "WARNING: Device discovery was orphaned by an earlier stop; not restarting it.\n");
+		return;
+	}
+
     om.quitDiscoveryThread = 0;
 
-	// Initialize
+	// Initialize (the mutex and condition variable are statically initialised -- see M1 above)
+    pthread_mutex_lock(&gStartMutex);
 	gStarted = 0;
 	gFinished = 0;
-	pthread_mutex_init(&gStartMutex, 0);
-	pthread_cond_init(&gStartCond, NULL);
-    pthread_mutex_lock(&gStartMutex);
 
     //OmUpdateDevices();
     if (thread_create(&om.discoveryThread, NULL, OmDeviceDiscoveryThread, NULL) != 0)
@@ -752,14 +804,52 @@ void OmDeviceDiscoveryStop(void)
 	gThreadValid = 0;
 	if (!finished)
 	{
-		// Bounded quit beats a correct one here: the thread is left running (and the notify port
-		// with it, since it is still using it), but the app can exit.
+		// PATCH (omgui-mac) H4/L1: a bounded quit beats a correct one, but C17's bare
+		// pthread_detach() traded the hang for undefined behaviour -- it left the callbacks armed
+		// and told OmShutdown() nothing, so the frees and both mutex_destroy()s ran while a thread
+		// stuck in getUSBStringDescriptor()'s DeviceRequest or in DiskArbitration was still walking
+		// the device table, locking om.downloadMutex and calling om.deviceCallback (which resolves
+		// an Unmanaged<LibOmapiBackend> the caller is about to release).
+		//
+		// So: cut every route from the orphan back into the caller *before* detaching it, tell
+		// OmShutdown() to free nothing and destroy nothing (OmDeviceDiscoveryDetached), and leave
+		// the orphan owning gNotifyPort, gAddedIter and every registered DeviceData -- it is still
+		// using all three, and destroying the port under it is exactly the crash we are avoiding.
+		// Only gRunLoop is cleared, so a later CFRunLoopStop() cannot target a stale reference.
 		OmLog(0, "WARNING: Device discovery thread did not stop; detaching it.\n");
+
+		om.deviceCallback = NULL;
+		om.deviceCallbackReference = NULL;
+		om.downloadCallback = NULL;
+		om.downloadCallbackReference = NULL;
+		om.downloadChunkCallback = NULL;
+		om.downloadChunkCallbackReference = NULL;
+		// OmLog() itself calls out through this one, from findMount() among others; the message
+		// above is deliberately emitted before it is cleared.
+		om.logCallback = NULL;
+		om.logCallbackReference = NULL;
+
+		gRunLoop = NULL;
+		gDiscoveryDetached = 1;
 		pthread_detach(om.discoveryThread);
 		return;
 	}
 
 	thread_join(om.discoveryThread, NULL);
+
+	// PATCH (omgui-mac) L1: the thread is joined, so nothing else can be in DeviceAdded() or
+	// DeviceNotification() and the registry can be walked unlocked.  Each armed
+	// kIOGeneralInterest notification owns its DeviceData, and destroying the port below means
+	// DeviceNotification() can never fire again -- so release them here, running the same
+	// epilogue that callback would have run.  No OM_DEVICE_REMOVED is issued: the devices are
+	// still attached, and a restart's DeviceAdded() will report them again.
+	while (gDeviceDataList != NULL)
+	{
+		DeviceData *deviceData = gDeviceDataList;
+		gDeviceDataList = deviceData->next;
+		deviceData->next = NULL;
+		DeviceDataRelease(deviceData);
+	}
 
 	// PATCH (omgui-mac) C17: upstream released neither, so every stop/start cycle leaked a mach
 	// port and left a second matching notification armed on the same iterator.

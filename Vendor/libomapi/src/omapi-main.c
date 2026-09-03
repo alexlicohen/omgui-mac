@@ -55,6 +55,10 @@ const char *OmErrorString(int status)
 }
 
 
+/** PATCH (omgui-mac) H1/H3: sticky once an OmShutdown() has had to leak rather than tear down. */
+static int gShutdownLeaked = 0;
+
+
 int OmStartup(int version)
 {
     // Debug environment variable
@@ -91,15 +95,27 @@ int OmStartup(int version)
 	}
 
     // Mutex
-    mutex_init(&om.portMutex, NULL);
+    //
+    // PATCH (omgui-mac) H1/H3: not if a previous OmShutdown() had to leave a thread running.  That
+    // shutdown deliberately skipped both mutex_destroy() calls because the orphan can still lock
+    // them; re-initialising a mutex another thread may hold is the same undefined behaviour, so the
+    // existing pair is reused instead.
+    if (gShutdownLeaked)
+    {
+        OmLog(0, "WARNING: Reusing the mutexes an earlier shutdown could not destroy.\n");
+    }
+    else
+    {
+        mutex_init(&om.portMutex, NULL);
 #if !defined(_WIN32)
-    pthread_mutexattr_t attr;
-    pthread_mutexattr_init(&attr);
-    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE); 
-    mutex_init(&om.downloadMutex, &attr);
+        pthread_mutexattr_t attr;
+        pthread_mutexattr_init(&attr);
+        pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+        mutex_init(&om.downloadMutex, &attr);
 #else
-    mutex_init(&om.downloadMutex, NULL);
+        mutex_init(&om.downloadMutex, NULL);
 #endif
+    }
     
     // Flag the API as initialized (before device discovery)
     om.initialized = 1;
@@ -113,28 +129,62 @@ int OmStartup(int version)
 
 int OmShutdown(void)
 {
+    int discoveryOrphaned;      // A live discovery thread can reach any record: free nothing
+    int leaked;                 // Something is still running: keep the mutexes
+
     OmLog(3, "OmShutdown() started.\n");
 
     if (!om.initialized) return OM_E_NOT_VALID_STATE;
+
+    // Clearing this first is what closes the door on new work: OmBeginDownloading() and every
+    // other public entry point refuse a library that is not initialized.
     om.initialized = 0;
 
     // Destroy device discovery thread
     OmDeviceDiscoveryStop();
-    
-    // Clear device state table
+
+    // PATCH (omgui-mac) H4: OmDeviceDiscoveryStop() is bounded and orphans the discovery thread if
+    // it will not come back.  An orphan can still be inside DeviceAdded()/findMount(), walking the
+    // device table and calling out through om.deviceCallback, so from here on nothing may be freed
+    // and no mutex may be destroyed.  C17 left this case silent, which is how the C3 join in the
+    // removal callback turned into a use-after-free rather than just a hang.
+    discoveryOrphaned = OmDeviceDiscoveryDetached();
+    leaked = discoveryOrphaned;
+
+    // PATCH (omgui-mac) H1/H3, superseding C3.  This is the one authoritative cancel-and-join for
+    // every download; the removal callback deliberately does not join (see omapi-internal.c).
+    //
+    // Two passes.  Cancellation is requested for every device first, so all the download threads
+    // are winding down in parallel and they share one timeout budget rather than getting one each.
+    // Only then is each state reaped, and only a state whose thread has published downloadFinished
+    // is freed -- a thread that missed the budget keeps its state, and takes both mutexes with it.
+	for (OmDeviceRecord *record = om.deviceRecords; record != NULL; record = record->next)
+	{
+        if (record->state != NULL) { OmDownloadRequestCancel(record->state); }
+    }
+
 	for (OmDeviceRecord *record = om.deviceRecords; record != NULL; record = record->next)
 	{
         if (record->state != NULL)
         {
-            // PATCH (omgui-mac) C3: cancel and join unconditionally.  The CONNECTED guard skipped
-            // exactly the device that needs it -- one unplugged mid-download -- and OmShutdown()
-            // has already cleared om.initialized, which made the OmCancelDownload() call a no-op
-            // for every device.  free() then ran while the download thread was still reading.
-            OmLog(3, "OmDownloadCancelJoin(%d)...\n", record->id);
-            OmDownloadCancelJoin(record->state);
+            OmLog(3, "OmDownloadJoinBounded(%d)...\n", record->id);
+            if (!OmDownloadJoinBounded(record->state, OM_DOWNLOAD_JOIN_TIMEOUT_MS))
+            {
+                leaked = 1;         // That thread still owns this state: leak it, keep the mutexes
+                continue;
+            }
+            if (discoveryOrphaned) { continue; }
             free(record->state);
             record->state = NULL;
         }
+    }
+
+    if (leaked)
+    {
+        gShutdownLeaked = 1;
+        OmLog(0, "WARNING: OmShutdown() left a thread running; device states and mutexes are leaked deliberately.\n");
+        OmLog(3, "OmShutdown() done.\n");
+        return OM_OK;
     }
 
     // Delete mutex

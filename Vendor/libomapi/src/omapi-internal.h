@@ -51,6 +51,7 @@
     #define thread_create(thread, attr_ignored, start_routine, arg) ((*(thread) = CreateThread(attr_ignored, 0, start_routine, arg, 0, NULL)) == NULL)
     #define thread_join(thread, value_ptr_ignored) ((value_ptr_ignored), WaitForSingleObject((thread), INFINITE) != WAIT_OBJECT_0)
     #define thread_cancel(thread) (TerminateThread(*(thread), -1) == 0)
+    #define thread_detach(thread) (CloseHandle((thread)) == 0)      /* PATCH (omgui-mac) H1/H3 */
     #define thread_return_t DWORD WINAPI
     #define thread_return_value(value) ((unsigned int)(value))
 
@@ -103,6 +104,7 @@
     #define thread_create pthread_create
     #define thread_join   pthread_join
     #define thread_cancel pthread_cancel
+    #define thread_detach pthread_detach    /* PATCH (omgui-mac) H1/H3: orphan a thread that did not stop in time */
 	typedef void *        thread_return_t;
     #define thread_return_value(value_ignored) ((void *)((value_ignored) ^ (value_ignored)))    // return NULL;
 
@@ -175,7 +177,17 @@ typedef struct
 
     int fd;                             /**< File descriptor for the serial port while open. The common portMutex is used to allow changes to this -- must hold to acquire or release the CDC port. */
 
-    volatile char downloadCancel;       /**< Download cancellation request flag */
+    // PATCH (omgui-mac) H1/H3: the download thread's liveness protocol.  `downloadCancel` is read
+    // by the download thread with no lock held, so it is atomic rather than merely volatile; it is
+    // *written* under om.downloadMutex, which is also what makes it safe to invalidate
+    // `downloadSource` in the same critical section.  `downloadFinished` is the thread's promise
+    // that it has stopped touching this structure -- it is the last thing OmDownloadThread() does,
+    // after both streams are closed and the final status update has been delivered -- and it is
+    // what lets shutdown bound its wait instead of joining an unbounded fread().
+    // `downloadThreadActive` says a thread exists that nobody has joined or detached yet.
+    _Atomic char downloadCancel;        /**< Download cancellation request flag */
+    _Atomic char downloadFinished;      /**< Set once the download thread has released this state */
+    _Atomic char downloadThreadActive;  /**< A download thread exists and has not been reaped */
 
     // The common downloadMutex is used to allow changes to these values, must hold to start/update/stop a download.
     OM_DOWNLOAD_STATUS downloadStatus;  /**< Status of an asynchronous download */
@@ -253,6 +265,13 @@ void OmDeviceDiscoveryStart(void);
 /** Device discovery stop */
 void OmDeviceDiscoveryStop(void);
 
+/** PATCH (omgui-mac) H4: non-zero once OmDeviceDiscoveryStop() has given up waiting for the
+ *  discovery thread and orphaned it.  The orphan can still be inside DeviceAdded()/findMount()
+ *  walking the device table, holding the notify port, and calling out through om.deviceCallback,
+ *  so OmShutdown() must not free the device states and must not destroy the mutexes.  The flag is
+ *  sticky for the life of the process: the orphan never ends. */
+int OmDeviceDiscoveryDetached(void);
+
 /** Device discovery handler */
 void OmDeviceDiscovery(OM_DEVICE_STATUS status, unsigned int inSerialNumber, const char *serialId, const char *port, const char *volumePath);
 
@@ -278,11 +297,73 @@ int OmPortRelease(unsigned int deviceId);
 /** Get the device state for the given device id */
 OmDeviceState *OmDevice(int serial);
 
-/** PATCH (omgui-mac) C3: request cancellation of any download for this device and join its
- *  thread.  Unlike OmCancelDownload() this does not require om.initialized or a CONNECTED
- *  device, so it is usable from the removal and shutdown paths -- which is where the state it
- *  protects used to be freed underneath a running download thread. */
+/** PATCH (omgui-mac) H1/H2/H3: the removal/shutdown side of the download lifecycle, split into a
+ *  non-blocking request and a bounded wait.  C3 fused the two into one unbounded cancel+join and
+ *  called it from the IOKit run-loop thread, which wedged device discovery for the length of a
+ *  download and then let OmShutdown() free the state under two live threads.  There is now exactly
+ *  one authoritative join, in OmShutdown(), and it cannot block for longer than its budget.
+ *
+ *  Callable with om.initialized cleared and with a device that is no longer CONNECTED -- which is
+ *  the state of a device being unplugged, and of every device inside OmShutdown().
+ */
+
+/** Create the download thread for a prepared OmDeviceState and arm the liveness protocol.  The
+ *  caller owns downloadSource/downloadDest if this fails. */
+int OmDownloadStartThread(OmDeviceState *device);
+
+/** Ask a running download to stop.  Never blocks, so it is safe on the IOKit run-loop thread.
+ *  Sets downloadCancel and invalidates the source stream's descriptor under om.downloadMutex, so
+ *  the copy loop's next read reports end-of-file instead of hanging on a vanished volume. */
+void OmDownloadRequestCancel(OmDeviceState *device);
+
+/** Wait up to timeoutMs for the download thread to publish downloadFinished.  Returns non-zero if
+ *  it did (the state is then safe to free), zero on timeout. */
+int OmDownloadWaitFinished(OmDeviceState *device, unsigned long timeoutMs);
+
+/** Bounded reap.  Waits up to timeoutMs for the thread to release the state, then joins it and
+ *  returns non-zero.  On timeout the thread is detached and zero is returned: the caller must then
+ *  leak this OmDeviceState and must not destroy any mutex the thread can still take. */
+int OmDownloadJoinBounded(OmDeviceState *device, unsigned long timeoutMs);
+
+/** PATCH (omgui-mac) C3, superseded by H1/H3: kept as a compatibility spelling of
+ *  "request cancellation, then reap with the standard budget".  Never call it from the device
+ *  discovery run-loop thread -- OmDownloadRequestCancel() alone belongs there. */
 void OmDownloadCancelJoin(OmDeviceState *device);
+
+/** The budget OmShutdown() gives all download threads together to let go of their state. */
+#define OM_DOWNLOAD_JOIN_TIMEOUT_MS 2000
+
+
+/* PATCH (omgui-mac) H1/H3: test hooks (omapi-testhook.c).
+ *
+ * The cancel/finished protocol above is the part of the shutdown redesign that can be exercised
+ * without an AX3/AX6 attached, but every public entry point into it insists on a started library
+ * and a discovered device.  These hooks stand a real OmDeviceState up over a caller-supplied file
+ * descriptor and run the real OmDownloadThread() over it, so the test drives the same code the
+ * unplug and quit paths drive.  Tests/OmApiTests/LibOmapiDownloadProtocolTests.swift binds them
+ * with @_silgen_name (Vendor/libomapi/include holds only the public omapi.h, and the vendored
+ * public header is deliberately not extended for a test).
+ *
+ * They are not part of the API: nothing in Sources/ calls them.
+ */
+
+/** Initialise just the mutexes and mark the library live, without starting device discovery. */
+int OmTestBegin(void);
+
+/** Undo OmTestBegin(), releasing every state created by OmTestDeviceCreate(). */
+void OmTestEnd(void);
+
+/** Register a device whose download reads `sourceFd` and writes `destPath` (NULL to discard). */
+OmDeviceState *OmTestDeviceCreate(unsigned int deviceId, int sourceFd, const char *destPath, int blocksTotal);
+
+/** Start the real download thread over the state from OmTestDeviceCreate(). */
+int OmTestDownloadStart(OmDeviceState *device);
+
+/** Observers for the protocol's published state. */
+int OmTestDownloadFinished(OmDeviceState *device);
+int OmTestDownloadStreamsClosed(OmDeviceState *device);
+int OmTestDownloadStatus(OmDeviceState *device);
+int OmTestDownloadThreadActive(OmDeviceState *device);
 
 #ifdef __cplusplus
 }

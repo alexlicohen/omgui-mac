@@ -147,6 +147,27 @@ void OmDeviceDiscovery(OM_DEVICE_STATUS status, unsigned int inSerialNumber, con
             memset(deviceState, 0, sizeof(OmDeviceState));
             deviceState->fd = -1;
         }
+        else
+        {
+            // PATCH (omgui-mac) U3: a device that re-enumerates without an intervening
+            // kIOMessageServiceIsTerminated arrives here still marked CONNECTED, and the three
+            // fields below are plain char[] rewritten in place.  C15's ordering argument only
+            // covers REMOVED -> CONNECTED, so without this a reader that is polling the table --
+            // in OmGui, a 100 ms tick on the main thread -- could read a half-rewritten `root`
+            // through OmGetDevicePath()/OmGetDataFilename().  Taking the device out of CONNECTED
+            // first restores that argument for the re-connect case too: a reader either sees the
+            // previous values consistently, or sees the device as not-connected and does not read
+            // them at all.  The fence stops the string stores being hoisted above the status
+            // store (a release store orders what precedes it, not what follows).  The window is
+            // microseconds and closes with the CONNECTED store below; it is not a removal, so no
+            // OM_DEVICE_REMOVED callback is issued.
+            //
+            // The alternative in the review -- publish a fresh OmDeviceState by swapping the
+            // atomic record->state -- was rejected because the old state can still be in use by a
+            // download thread and by any caller holding the pointer, so it could never be freed.
+            deviceState->deviceStatus = OM_DEVICE_REMOVED;
+            atomic_thread_fence(memory_order_seq_cst);
+        }
 
 		// PATCH (omgui-mac) C15: fill the state in *before* the record is published to the
 		// device table -- the table is walked from another thread, so a record must never be
@@ -215,15 +236,22 @@ OmLog(2, "DEBUG: Device removed: #%u\n", serialNumber);   // PATCH (omgui-mac) C
         deviceState = OmDevice(serialNumber);
         if (deviceState == NULL) { return; }        // Removal called for a never-seen device (should not be possible from the DeviceFinder)
 
-        // PATCH (omgui-mac) C3: cancel and join any download *before* marking the device
-        // removed.  Upstream set the status first, after which OmCancelDownload()'s
-        // OmQueryDownload() rejected the now-not-CONNECTED device with OM_E_INVALID_DEVICE and
-        // returned without ever joining -- leaving a detached thread reading from the volume
-        // that is going away, and (on Cmd-Q) OmShutdown() free()ing the state underneath it.
-        OmDownloadCancelJoin(deviceState);
-
-        // Set the removed status
+        // PATCH (omgui-mac) H1/H2, superseding C3.  Two things have to happen here and neither of
+        // them is a join.  This runs on the IOKit run-loop thread: C3's OmDownloadCancelJoin()
+        // blocked it for the length of a download, during which no attach/detach notification was
+        // delivered and no CFRunLoopStop() was processed -- so a quit could not stop discovery,
+        // OmShutdown() timed out, and free() ran under two live threads.
+        //
+        // Order matters.  deviceStatus is _Atomic, so storing REMOVED *first* closes the window in
+        // which OmBeginDownloading()'s "device lost" guard still passes and a brand new download
+        // thread is created for a device that is going away (C3 had the join first, which left
+        // that window open for the whole download).  Only then is cancellation requested, under
+        // om.downloadMutex, so it cannot race the thread's own stream teardown.
+        //
+        // The thread is left running.  It is reaped by whoever comes next: OmShutdown()'s bounded
+        // join, or the device's next OmBeginDownloading().
         deviceState->deviceStatus = OM_DEVICE_REMOVED;
+        OmDownloadRequestCancel(deviceState);
 
         // Port
         //deviceState->portMutex;
