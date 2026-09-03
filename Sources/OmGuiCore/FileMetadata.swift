@@ -183,7 +183,10 @@ public enum PropertyGrid {
             PropertyRow("Download", "Download Status", String(describing: device.downloadStatus)),
             PropertyRow("Download", "Download Value", String(device.downloadValue)),
         ]
-        if let config = try? device.accelConfig() {
+        // The cached value, never a live `RATE` command: this runs on the main thread from every
+        // selection change and every device-changed callback, and the device's serial port is
+        // exclusive — asking here collides with whatever flow currently owns the device.
+        if let config = device.cachedAccelConfig {
             rows.append(PropertyRow("Recording", "Sampling Rate", config.rate.displayString))
             rows.append(PropertyRow("Recording", "Sampling Range", String(config.range.rawValue)))
             if let gyro = config.gyro, gyro != .off {

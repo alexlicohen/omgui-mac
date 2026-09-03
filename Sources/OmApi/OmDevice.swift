@@ -32,6 +32,10 @@ public final class OmDevice: @unchecked Sendable {
     private var _downloadDestination: String?
     private var _downloadFinalPath: String?
     private var _downloadedThisSession = false
+    private var _downloadFailure: String?
+    private var _lastDownloadedPath: String?
+    private var _accelConfig: AccelConfig?
+    private var _syncTimeTiming: SyncTimeTiming = .upstream
 
     init(api: OmApi, backend: DeviceBackend, deviceId: UInt32) {
         self.api = api
@@ -75,6 +79,26 @@ public final class OmDevice: @unchecked Sendable {
     public var downloadStatus: DownloadStatus { withLock { _downloadStatus } }
     public var downloadValue: Int { withLock { _downloadValue } }
     public var warning: DeviceWarning { withLock { _warning } }
+
+    /// Why the last download ended in `.error` when the failure was ours rather than the device's
+    /// — currently only the `.part` → `.cwa` rename. `nil` for a device-side error.
+    public var downloadFailure: String? { withLock { _downloadFailure } }
+
+    /// The file the last completed download actually produced — set only once the rename has been
+    /// made and the file has been seen on disk, so a `.complete` status and this value together
+    /// are the proof a `DOWNLOAD-OK` record needs.
+    public var lastDownloadedPath: String? { withLock { _lastDownloadedPath } }
+
+    /// The accelerometer configuration as of the last poll (`update()`), a device write, or a
+    /// clear. Reading it costs nothing: `accelConfig()` is a 2 s-timeout `RATE` round trip, and a
+    /// property grid that calls it on every selection change serialises against the flows.
+    public var cachedAccelConfig: AccelConfig? { withLock { _accelConfig } }
+
+    /// How long `syncTime()` waits. `.upstream` is what `OmDevice.cs` does; tests shorten it.
+    public var syncTimeTiming: SyncTimeTiming {
+        get { withLock { _syncTimeTiming } }
+        set { withLock { _syncTimeTiming = newValue } }
+    }
 
     /// `OmDevice.IsDownloading`.
     public var isDownloading: Bool { withLock { _connected && _downloadStatus == .progress } }
@@ -171,18 +195,42 @@ public final class OmDevice: @unchecked Sendable {
             _downloadValue = 0
             _warning = .none
             _lastUpdate = nil
+            _accelConfig = nil
             if value { _info = try? backend.info(deviceId) }
         }
     }
 
+    /// Re-read the static device info (`OmGetDevicePath` and friends) from the backend.
+    ///
+    /// The volume can be re-mounted at a different path after a commit, so anything that writes to
+    /// the device's file system after configuring it must resolve the path again rather than reuse
+    /// the one captured when the device was attached.
+    @discardableResult
+    public func refreshInfo() -> DeviceInfo? {
+        guard let info = try? backend.info(deviceId) else { return nil }
+        withLock { _info = info }
+        return info
+    }
+
     func updateDownloadStatus(_ status: DownloadStatus, value: Int) {
+        // The `.part` → `.cwa` rename happens *before* the status is published: a rename that
+        // failed is a failed download, and must never reach a UI (or a download log) as
+        // "complete". Upstream cannot produce that state because `File.Move` throws.
+        var effective = status
+        var effectiveValue = value
+        var failure: String?
+        if status == .complete, finishedDownloading() == nil {
+            effective = .error
+            effectiveValue = Int(OmError.accessDenied.code)
+            failure = withLock { _downloadFailure } ?? "the downloaded file could not be renamed"
+        }
         withLock {
-            _downloadStatus = status
-            _downloadValue = value
+            _downloadStatus = effective
+            _downloadValue = effectiveValue
+            _downloadFailure = failure
             _hasChanged = true
         }
-        if status == .complete { finishedDownloading() }
-        api.deviceChanged(self, downloadStatus: status)
+        api.deviceChanged(self, downloadStatus: effective)
     }
 
     // MARK: - Polling
@@ -251,6 +299,14 @@ public final class OmDevice: @unchecked Sendable {
                 withLock { _sessionId = session }
             } else { error |= 0x08 }
 
+            // Not one of OMGUI's five status reads (so it does not feed `error`/`validData`), but
+            // read here for the same reason they are: the property grid needs the value and this
+            // is the only thread allowed to ask the device for it.
+            if let raw = try? backend.accelConfig(deviceId),
+               let config = AccelConfig(apiRate: raw.rate, apiRange: raw.range) {
+                withLock { _accelConfig = config }
+            }
+
             changed = true
             if error == 0 { withLock { _validData = true } }
         }
@@ -278,11 +334,14 @@ public final class OmDevice: @unchecked Sendable {
         markChanged()
     }
 
+    /// Ask the device (a blocking `RATE` command). Callers on the main thread want
+    /// `cachedAccelConfig` instead.
     public func accelConfig() throws -> AccelConfig {
         let raw = try backend.accelConfig(deviceId)
         guard let config = AccelConfig(apiRate: raw.rate, apiRange: raw.range) else {
             throw OmApiError("Unrecognised accelerometer configuration (rate=\(raw.rate), range=\(raw.range))")
         }
+        withLock { _accelConfig = config }
         return config
     }
 
@@ -291,6 +350,7 @@ public final class OmDevice: @unchecked Sendable {
         var effective = config
         if !hasSyncGyro { effective.gyro = nil }
         try backend.setAccelConfig(deviceId, rate: effective.apiRate, range: effective.apiRange)
+        withLock { _accelConfig = effective }
         markChanged()
     }
 
@@ -343,29 +403,58 @@ public final class OmDevice: @unchecked Sendable {
     @discardableResult
     public func neverRecord() -> Bool { setInterval(start: .infinite, stop: .infinite) }
 
-    /// `OmDevice.SyncTime`, minus the busy-spin: sets the device clock to the next whole second
-    /// and verifies it reads back within 5 s.
+    /// `OmDevice.SyncTime`, minus the busy-spin: sets the device clock to the next whole second,
+    /// waits for it to settle, verifies it reads back within 5 s, then verifies the clock is
+    /// actually ticking.
+    ///
+    /// Both waits matter. A device whose RTC crystal is dead latches the write and reads it back
+    /// unchanged, so a read-back taken milliseconds later passes and the study gets a week stamped
+    /// with a frozen clock; upstream sleeps 1200 ms and then polls until the value strictly
+    /// increases, giving up after 4 s.
     @discardableResult
-    public func syncTime(retries: Int = 12) -> Bool {
+    public func syncTime(retries: Int? = nil) -> Bool {
+        let timing = syncTimeTiming
         withLock { _warning = .none }
-        var remaining = retries
+        var remaining = retries ?? timing.retries
+        var lastRead: OmDateTime?
+
         while remaining > 0 {
             remaining -= 1
             // Align to the next second boundary so the device is set on a whole second.
             let now = Date()
-            let boundary = (now.timeIntervalSince1970).rounded(.down) + 1
-            Thread.sleep(forTimeInterval: max(0, boundary - now.timeIntervalSince1970))
+            var boundary = (now.timeIntervalSince1970).rounded(.down)
+            if timing.alignToSecondBoundary {
+                boundary += 1
+                Thread.sleep(forTimeInterval: max(0, boundary - now.timeIntervalSince1970))
+            }
             let setDate = Date(timeIntervalSince1970: boundary)
             guard (try? backend.setTime(deviceId, OmDateTime(date: setDate))) != nil else { continue }
+            // "Wait before checking the time" — the device needs to have taken the write.
+            Thread.sleep(forTimeInterval: timing.settle)
             guard let readBack = try? backend.time(deviceId), let readDate = readBack.date() else { continue }
             let difference = readDate.timeIntervalSince(setDate)
             withLock { _timeDifference = difference }
             if abs(difference) > 5 { continue }
-            markChanged()
-            api.deviceChanged(self)
-            return true
+            lastRead = readBack
+            break
         }
-        return false
+
+        guard let lastRead else { return false }
+        markChanged()
+        api.deviceChanged(self)
+
+        // Verify that the clock is ticking: the packed value has to strictly increase, and land
+        // within a few seconds of now.
+        let checkStart = Date()
+        while true {
+            guard let current = try? backend.time(deviceId) else { return false }
+            if current.raw > lastRead.raw, let currentDate = current.date(),
+               Date().timeIntervalSince(currentDate) < 5 {
+                return true
+            }
+            if Date().timeIntervalSince(checkStart) > timing.tickTimeout { return false }
+            Thread.sleep(forTimeInterval: timing.tickPollInterval)
+        }
     }
 
     /// `OmDevice.Clear` — the exact sequence OMGUI's Clear button runs.
@@ -388,6 +477,7 @@ public final class OmDevice: @unchecked Sendable {
                 _startTime = .infinite
                 _stopTime = .infinite
                 _downloadedThisSession = false
+                _accelConfig = defaults
             }
             if withLock({ _warning }) != .none { _ = syncTime() }
         }
@@ -410,6 +500,8 @@ public final class OmDevice: @unchecked Sendable {
         withLock {
             _downloadDestination = destination
             _downloadFinalPath = finalPath
+            _downloadFailure = nil
+            _lastDownloadedPath = nil
         }
         try backend.beginDownload(deviceId, to: destination)
     }
@@ -417,25 +509,43 @@ public final class OmDevice: @unchecked Sendable {
     /// `OmDevice.CancelDownload`.
     public func cancelDownload() { try? backend.cancelDownload(deviceId) }
 
-    /// `OmDevice.FinishedDownloading` — the `.cwa.part` → `.cwa` rename.
+    /// `OmDevice.FinishedDownloading` — the `.cwa.part` → `.cwa` rename. Returns the final path,
+    /// or nil (with `downloadFailure` set) when the download cannot be published.
+    ///
+    /// As upstream's `File.Move`, an existing destination is *not* removed: the overwrite question
+    /// is asked once, at the start of the download (`DownloadFlow`), and a file that appeared in
+    /// the workspace since then belongs to somebody else. The move fails and the download is
+    /// reported as failed rather than silently destroying it.
     @discardableResult
     public func finishedDownloading() -> String? {
         let (source, destination) = withLock { (_downloadDestination, _downloadFinalPath) }
-        guard let source else { return nil }
+        guard let source else {
+            withLock { _downloadFailure = "no download was in progress" }
+            return nil
+        }
         var final = source
         if let destination, destination != source {
-            try? FileManager.default.removeItem(atPath: destination)
             do {
                 try FileManager.default.moveItem(atPath: source, toPath: destination)
                 final = destination
             } catch {
+                withLock {
+                    _downloadFailure = "could not rename \(source) to \(destination): "
+                        + ((error as NSError).localizedFailureReason ?? error.localizedDescription)
+                }
                 return nil
             }
+        }
+        guard FileManager.default.fileExists(atPath: final) else {
+            withLock { _downloadFailure = "the downloaded file is missing: \(final)" }
+            return nil
         }
         withLock {
             _downloadDestination = nil
             _downloadFinalPath = nil
             _downloadedThisSession = true
+            _downloadFailure = nil
+            _lastDownloadedPath = final
         }
         return final
     }

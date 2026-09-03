@@ -23,6 +23,9 @@ final class GuiHarness {
         backend.downloadStepDelay = downloadDelay
         api = OmApi(backend: backend)
         try api.startup()
+        // The mock's clock is the host clock, so upstream's 1.2 s settle and its wait for the
+        // packed value to tick would cost seconds per configured device and prove nothing.
+        for device in api.devices { device.syncTimeTiming = .fast }
     }
 
     func device(_ id: UInt32) throws -> OmDevice {

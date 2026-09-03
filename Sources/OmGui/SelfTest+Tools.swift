@@ -103,6 +103,40 @@ extension SelfTest {
         model.filesTab = 0
         model.showPreview = hadPreview
 
+        // --- Export Raw CSV over a multi-file selection ------------------------------------------
+        // `ExportData(List<string> files, ...)` shows one dialog per selected file. The second one
+        // is presented from the first one's close, so this leg is the only thing that catches the
+        // sheet never coming back and the rest of the selection being dropped in silence.
+        let chained = model.workspace.appendingPathComponent("chained-" + file.name)
+        try? FileManager.default.removeItem(at: chained)
+        try? FileManager.default.copyItem(at: URL(fileURLWithPath: file.location), to: chained)
+        model.refreshFiles()
+        model.dataSelection = nil
+        model.selectedFilePaths = Set(model.dataFiles.map(\.location))
+        model.fileSelectionChanged()
+        say("multi-file export: \(model.selectedFilePaths.count) file(s) selected")
+        model.exportRawCsv()
+        await pause(0.3)
+        let firstSource = model.exportSheet?.rawCsv.sourceFile
+        model.closeExportSheet()
+        // The next dialog must be presented from a later main-loop turn: a nil→new assignment
+        // inside the dismissing update is what `.sheet(item:)` swallows.
+        expect(model.exportSheet == nil,
+               "the sheet is cleared before the next one is presented, not replaced in place")
+        for _ in 0..<40 where model.exportSheet == nil { await pause(0.05) }
+        let secondSource = model.exportSheet?.rawCsv.sourceFile
+        say("Export raw data dialogs: 1=\(DotNetPath.fileName(firstSource ?? "(none)"))"
+            + " 2=\(DotNetPath.fileName(secondSource ?? "(none)"))")
+        expect(model.selectedFilePaths.count > 1, "two data files are selected for the chained export")
+        expect(firstSource != nil && secondSource != nil && firstSource != secondSource,
+               "the second file gets its own Export raw data dialog")
+        model.closeExportSheet()
+        await pause(0.2)
+        model.pendingRawCsv.removeAll()
+        model.exportSheet = nil
+        try? FileManager.default.removeItem(at: chained)
+        model.refreshFiles()
+
         // --- A tool: SVM, which resamples to .wav first and then runs the analysis -------------
         model.filesTab = 0
         model.selectedFilePaths = [file.location]

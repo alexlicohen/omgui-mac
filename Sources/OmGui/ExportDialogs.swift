@@ -95,10 +95,8 @@ struct ExportSheet: View {
     }
 
     private func close() {
-        let onClose = context.onClose
         dismiss()
-        model.exportSheet = nil
-        onClose?()
+        model.closeExportSheet()
     }
 
     @ViewBuilder

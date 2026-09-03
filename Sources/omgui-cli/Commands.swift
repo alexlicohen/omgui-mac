@@ -287,9 +287,40 @@ enum Commands {
     // MARK: - clear
 
     /// OMGUI's Clear. Default is a full NAND wipe; `--quick` is OMGUI's Shift-click quick format.
+    ///
+    /// Every guard OMGUI's Clear button has, in its order: no implicit "all devices", nothing
+    /// downloading (`EnsureNoSelectedDownloading`), and an explicit confirmation that defaults to
+    /// no. This erases participant data that is not recoverable, so the default has to be refusal.
     static func clear(_ runner: Runner) throws {
-        let quick = runner.options.has("--quick")
+        let options = runner.options
+        let quick = options.has("--quick")
+
+        guard !options.deviceIds.isEmpty || options.has("--all") else {
+            throw CLIError.usage("clear erases the data on a device -- name the devices with --device ID (repeatable), or pass --all for every attached device")
+        }
+
         let devices = try runner.selectedDevices()
+        for device in devices { device.update(force: true) }
+
+        // `MainForm.EnsureNoSelectedDownloading`.
+        let downloading = devices.filter(\.isDownloading)
+        guard downloading.isEmpty else {
+            let ids = downloading.map { FilenameTemplate.deviceIdString($0.deviceId) }.joined(separator: ", ")
+            throw CLIError.failed("Download in progress for \(downloading.count) (of \(devices.count) selected) device(s) (\(ids)) -- cannot clear until the download is complete or cancelled")
+        }
+
+        if !options.has("--yes") {
+            let labels = devices.map { FilenameTemplate.deviceIdString($0.deviceId) }.joined(separator: ", ")
+            let withData = devices.filter(\.hasData).count
+            var question = "\(quick ? "Clear" : "Wipe") \(devices.count) device(s): \(labels)"
+            if withData > 0 { question += " -- \(withData) still hold(s) data, which will be erased" }
+            FileHandle.standardError.write(Data((question + ".\nContinue? [y/N] ").utf8))
+            let answer = readLine(strippingNewline: true)?.trimmingCharacters(in: .whitespaces).lowercased()
+            guard answer == "y" || answer == "yes" else {
+                throw CLIError.failed("Cancelled -- nothing was cleared (pass --yes to skip this question)")
+            }
+        }
+
         var failures: [String] = []
         for device in devices {
             let label = FilenameTemplate.deviceIdString(device.deviceId)

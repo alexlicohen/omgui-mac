@@ -103,6 +103,10 @@ final class AppModel: ObservableObject {
     private var identify = IdentifyController()
     private var identifyDevices: [OmDevice] = []
     private var pollInFlight = false
+    /// `MainForm.refreshTimer.Enabled == false` — set while a foreground flow owns the devices.
+    private(set) var backgroundTasksBlocked = false
+    /// `firmware/bootload.ini`, read once (`MainForm.CheckFirmware` re-reads it per click).
+    private lazy var firmwareBlacklist = FirmwareBlacklist.load()
     private var logHandle: FileHandle?
     /// `<final path>` for a download in flight, so the completion can be logged and verified.
     private var downloadPaths: [UInt32: DownloadPlan] = [:]
@@ -136,6 +140,11 @@ final class AppModel: ObservableObject {
     }
 
     func start() {
+        // `--self-test` drives Clear/Wipe, Record and Stop with every message box auto-answered.
+        // Refuse before the API is even started if that would reach real hardware.
+        if options.selfTestDirectory != nil, !(api.backend is MockBackend) {
+            SelfTest.refuseNonMockBackend(named: api.backend.name)
+        }
         for warning in options.warnings { log(warning) }
 
         api.onLog = { [weak self] message in
@@ -224,9 +233,19 @@ final class AppModel: ObservableObject {
             downloadPaths.removeValue(forKey: device.deviceId)
             log("Download cancelled: \(FilenameTemplate.deviceIdString(device.deviceId))")
         case .error:
-            downloadPaths.removeValue(forKey: device.deviceId)
-            log(String(format: "Download error (0x%X): %@", device.downloadValue,
-                       FilenameTemplate.deviceIdString(device.deviceId)))
+            let plan = downloadPaths.removeValue(forKey: device.deviceId)
+            let deviceText = FilenameTemplate.deviceIdString(device.deviceId)
+            if let reason = device.downloadFailure {
+                // The transfer itself finished; publishing it did not. Say so loudly: the operator
+                // decides whether to clear the device on the strength of this line.
+                log("DOWNLOAD-FAILED: \(deviceText) - \(reason)")
+                prompter.warn(title: FlowMessages.errorTitle,
+                              message: "The download from device \(device.deviceId) could not be saved:\n\n    "
+                                + (plan?.finalPath.path ?? reason)
+                                + "\n\n\(reason)\n\nThe device has NOT been downloaded -- do not clear it.")
+            } else {
+                log(String(format: "Download error (0x%X): %@", device.downloadValue, deviceText))
+            }
         default:
             break
         }
@@ -234,27 +253,46 @@ final class AppModel: ObservableObject {
     }
 
     private func finishDownload(_ device: OmDevice) {
-        guard let plan = downloadPaths.removeValue(forKey: device.deviceId) else { return }
-        // `OmDevice.finishedDownloading` performs the `.part` → `.cwa` rename.
-        let final = plan.finalPath.path
-        if plan.partialPath.path != final + ".part" {
+        // `OmDevice.finishedDownloading` performed the `.part` → `.cwa` rename and checked the
+        // result before this status was published, and it reports the file it actually produced.
+        // That is what `DOWNLOAD-OK` records: re-`stat`ing the plan's path here instead would be a
+        // claim about a *later* moment, which a second download of the same device (whose
+        // overwrite prompt has already deleted the file) can falsify. A rename that failed never
+        // reaches this method — it arrives as `.error`.
+        let plan = downloadPaths.removeValue(forKey: device.deviceId)
+        guard let final = device.lastDownloadedPath else {
+            log("DOWNLOAD-FAILED: \(FilenameTemplate.deviceIdString(device.deviceId)) completed without producing a file")
+            prompter.warn(title: FlowMessages.errorTitle,
+                          message: "The download from device \(device.deviceId) completed but produced no file."
+                            + "\n\nThe device has NOT been downloaded -- do not clear it.")
+            refreshFiles()
+            return
+        }
+        if let plan, plan.partialPath.path != plan.finalPath.path + ".part" {
             prompter.warn(title: "Warning",
-                              message: "An inconsistency has been identified downloading a file -- please delete and download again:\n\n" + final)
+                              message: "An inconsistency has been identified downloading a file -- please delete and download again:\n\n" + plan.finalPath.path)
         }
         log("DOWNLOAD-OK: \(final)")
         if let logPath = settings.downloadLogFile {
-            let line = DownloadLog.line(filename: plan.finalPath.lastPathComponent)
-            if !DownloadLog.append(line, to: logPath) {
-                prompter.warn(title: "Warning",
-                                  message: "Problem while appending to download log file (\(logPath)) - check the folder exists, you have write permission, and the file is not locked open by another process.")
-            }
+            let line = DownloadLog.line(filename: (final as NSString).lastPathComponent)
+            if !DownloadLog.append(line, to: logPath) { warnLogAppendFailed(logPath, kind: "download") }
         }
         refreshFiles()
+    }
+
+    /// `MainForm.cs:247-269`'s log-file warning, shared by the download and config logs.
+    private func warnLogAppendFailed(_ path: String, kind: String) {
+        prompter.warn(title: "Warning",
+                      message: "Problem while appending to \(kind) log file (\(path)) - check the folder exists, you have write permission, and the file is not locked open by another process.")
     }
 
     // MARK: - Polling (`refreshTimer_Tick`)
 
     private func tick() {
+        // `BlockBackgroundTasks` disables the timer outright; the flag is the same thing for a
+        // `Timer` that has to survive to be re-enabled.
+        guard !backgroundTasksBlocked else { return }
+
         refreshCounter += 1
         var doIdentify = false
         if refreshCounter % 5 == 0 { doIdentify = true }
@@ -319,7 +357,12 @@ final class AppModel: ObservableObject {
     func selectionChanged() {
         toolbar = DeviceToolbarState(selection: selectedRows)
 
-        if !selectedDeviceIds.isEmpty { selectedFilePaths.removeAll() }
+        if !selectedDeviceIds.isEmpty {
+            // The file selection is dropped, so its property grid has to go with it: leaving the
+            // previous file's Device/Session ID on screen makes it read as the selected device's.
+            selectedFilePaths.removeAll()
+            filePropertyRows = []
+        }
 
         devicePropertyRows = showDeviceProperties ? PropertyGrid.rows(forDevices: selectedDevices) : []
 
@@ -469,6 +512,10 @@ final class AppModel: ObservableObject {
         guard ensureNoSelectedDownloading(selection, prompt: prompter) else { return }
         let devices = selection.filter { !$0.isDownloading }
 
+        // `CheckFirmware(devices)` — upstream checks before Clear as well as before Record.
+        guard !checkFirmware(devices, blacklist: firmwareBlacklist, prompt: prompter,
+                             log: { [weak self] in self?.log($0) }) else { return }
+
         guard prompter.confirm(title: windowTitle,
                                message: ClearFlow.promptMessage(wipe: wipe, count: selection.count)) else { return }
 
@@ -513,6 +560,10 @@ final class AppModel: ObservableObject {
         let devices = selectedDevices
         guard ensureNoSelectedDownloading(devices, prompt: prompter) else { return }
 
+        // `CheckFirmware(devices)` — before the damaged-device warnings, as upstream orders them.
+        guard !checkFirmware(devices, blacklist: firmwareBlacklist, prompt: prompter,
+                             log: { [weak self] in self?.log($0) }) else { return }
+
         for device in devices where device.warning == .damaged {
             var decided = false
             while !decided {
@@ -547,10 +598,14 @@ final class AppModel: ObservableObject {
             RecordFlow.perform(devices: devices, settings: settingsModel, progress: progress)
         } completion: { [weak self] result in
             guard let self else { return }
+            var configLogFailed = false
             for line in result.logLines {
                 self.log(line)
-                if let configLog { DownloadLog.append(line, to: configLog) }
+                if let configLog, !DownloadLog.append(line, to: configLog) { configLogFailed = true }
             }
+            // An unwritable -configlog path silently loses the AX3-CONFIG-OK/ERROR rows a site
+            // files against the recording, so it gets the same warning the download log gets.
+            if configLogFailed, let configLog { self.warnLogAppendFailed(configLog, kind: "configuration") }
             // The line a site copies into Lasso Form 2 ("Date recording initiated in OMGUI").
             let now = Date()
             let confirmations = result.configured.map {
@@ -566,7 +621,32 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// `ShowProgressWithBackground` — a modal progress sheet over a background worker.
+    // MARK: - Background tasks (`BlockBackgroundTasks` / `EnableBackgroundTasks`)
+
+    /// `MainForm.BlockBackgroundTasks` — stop polling before a foreground flow touches the
+    /// devices.
+    ///
+    /// Without this the 100 ms poll runs `update()` (an `ID`/`BATT`/`TIME` round trip, and a
+    /// `reset()` after every third failure) on one device while `RecordFlow` is part-way through
+    /// configuring another. `OmPortAcquire` refuses the second opener outright, so the visible
+    /// result is a device that took its delays but not its interval: configured, not recording.
+    func blockBackgroundTasks() { backgroundTasksBlocked = true }
+
+    /// `MainForm.EnableBackgroundTasks`.
+    func enableBackgroundTasks() { backgroundTasksBlocked = false }
+
+    /// Upstream spins on `backgroundWorkerUpdate.IsBusy` with `Application.DoEvents()`; awaiting
+    /// is the same wait without blocking the main actor the poll needs to finish on.
+    private func drainBackgroundPoll(timeout: TimeInterval = 5) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while pollInFlight, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        if pollInFlight { log("WARNING: a device poll was still running after \(Int(timeout)) s.") }
+    }
+
+    /// `ShowProgressWithBackground` — a modal progress sheet over a background worker, with the
+    /// poll timer blocked for its duration.
     func runInBackground<T: Sendable>(title: String,
                                       message: String,
                                       work: @escaping @Sendable (ProgressHandler?) -> T,
@@ -575,8 +655,10 @@ final class AppModel: ObservableObject {
         progressSheet = context
         progress = 0
         statusText = message
+        blockBackgroundTasks()
 
-        Task.detached {
+        Task { @MainActor in
+            await drainBackgroundPoll()
             let handler: ProgressHandler = { report in
                 Task { @MainActor in
                     if report.percent >= 0 { self.progress = Double(report.percent) / 100.0 }
@@ -584,13 +666,12 @@ final class AppModel: ObservableObject {
                     self.statusText = report.message
                 }
             }
-            let result = work(handler)
-            await MainActor.run {
-                self.progressSheet = nil
-                self.progress = nil
-                completion(result)
-                self.updateStatus()
-            }
+            let result = await Task.detached { work(handler) }.value
+            self.progressSheet = nil
+            self.progress = nil
+            self.enableBackgroundTasks()
+            completion(result)
+            self.updateStatus()
         }
     }
 }

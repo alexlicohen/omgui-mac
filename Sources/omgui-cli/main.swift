@@ -12,12 +12,15 @@ Usage:
                      [--flash] [--device ID]... [--mock] [key=value]...
   omgui-cli download --workspace DIR [--template T] [--overwrite] [--force] [--quiet]
                      [--device ID]... [--mock]
-  omgui-cli clear    [--quick] [--device ID]... [--mock]
+  omgui-cli clear    (--device ID... | --all) [--quick] [--yes] [--mock]
 
 Options:
   --mock            Use the built-in fake devices instead of real hardware
                     (same as OMGUI_MOCK=1; --mock-root DIR moves the fake volumes).
   --device ID       Act on this device only; repeat for several. Default: every attached device.
+  --all             clear only: act on every attached device (there is no implicit default,
+                    because clear erases the recording).
+  --yes             clear only: skip the confirmation question.
   --rate HZ         3200 1600 800 400 200 100 50 25 12.5 6.25   (default 100)
   --range G         2 4 8 16                                    (default 8)
   --gyro DPS        0 125 250 500 1000 2000  (AX6 only; ignored on an AX3)

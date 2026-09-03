@@ -14,8 +14,30 @@ enum SelfTest {
     /// Where `shot(...)` writes, so a leg can also capture a frame synchronously.
     @MainActor static var screenshotFolder: URL?
 
+    /// Why `--self-test` will not run against real hardware, and the exit that enforces it.
+    ///
+    /// The run drives `clear(shiftHeld: false)` — a full NAND wipe — over every attached device
+    /// with a `ScriptedPrompter` that answers "Wipe N device(s)?" with OK and the "Device Possibly
+    /// Damaged" alert with Ignore, and it rewrites session id, metadata, rate and interval on the
+    /// way. Against `LibOmapiBackend` that is every watch on the desk.
+    static let refusalMessage = """
+        SELF-TEST REFUSED: --self-test wipes and reconfigures every attached device with all \
+        prompts auto-answered, so it only runs against the mock backend.
+        Re-run it as:  OmGui --mock --self-test [directory]
+        """
+
+    @MainActor
+    static func refuseNonMockBackend(named backendName: String) -> Never {
+        let message = refusalMessage + "\n(backend is \"\(backendName)\", not the mock.)"
+        FileHandle.standardError.write(Data((message + "\n").utf8))
+        exit(2)
+    }
+
     @MainActor
     static func run(model: AppModel, directory: String, completion: @escaping @MainActor () -> Void) {
+        // Belt and braces: `AppModel.start()` refuses before the API is started, and so does this,
+        // for any other caller.
+        guard model.api.backend is MockBackend else { refuseNonMockBackend(named: model.api.backend.name) }
         let folder = URL(fileURLWithPath: directory, isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         SelfTest.screenshotFolder = folder
@@ -194,8 +216,13 @@ enum SelfTest {
             prompter.answerConfirm = true
             say("clear (full wipe) \(model.selectedDeviceIds.count) device(s)")
             model.clear(shiftHeld: false)
+            // `BlockBackgroundTasks`: the 100 ms poll must not open a device's port while the
+            // flow is writing to it.
+            expect(model.backgroundTasksBlocked,
+                   "the device poll is blocked while a foreground flow runs")
             for _ in 0..<300 where model.progressSheet != nil { await pause(0.1) }
             await pause(0.8)
+            expect(!model.backgroundTasksBlocked, "the device poll is enabled again afterwards")
             model.rebuildRows()
             say("after clear: " + model.rows.map { "\($0.deviceText) session=\($0.sessionText) recording=\($0.recordingText) group=\($0.category.groupName)" }
                 .joined(separator: " | "))

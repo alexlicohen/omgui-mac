@@ -18,7 +18,7 @@ public enum LedState: Int32, Sendable, CaseIterable {
 }
 
 /// `OM_ERASE_LEVEL`.
-public enum EraseLevel: Int32, Sendable {
+public enum EraseLevel: Int32, Sendable, CaseIterable {
     case none = 0
     case delete = 1
     case quickFormat = 2
@@ -38,6 +38,40 @@ public enum DownloadStatus: Int32, Sendable {
 public enum DeviceConnectionStatus: Int32, Sendable {
     case removed = 0
     case connected = 1
+}
+
+/// The two waits in `OmDevice.SyncTime` (`OmDevice.cs:432-507`).
+///
+/// Only the app runs at `.upstream`: 1.2 s per device per attempt plus up to a second waiting for
+/// the clock to tick is deliberate on hardware and pointless against a mock.
+public struct SyncTimeTiming: Sendable, Equatable {
+    /// `Thread.Sleep(1200)` between writing the time and reading it back.
+    public var settle: TimeInterval
+    /// How long the "is the clock ticking?" check waits for the value to increase (upstream: 4 s).
+    public var tickTimeout: TimeInterval
+    /// How often that check re-reads the clock (upstream busy-spins).
+    public var tickPollInterval: TimeInterval
+    /// How many times the write-and-verify step is attempted (upstream: 12).
+    public var retries: Int
+    /// Wait for the second to roll over before writing, so the device is set on a whole second
+    /// (upstream busy-spins for it).
+    public var alignToSecondBoundary: Bool
+
+    public init(settle: TimeInterval, tickTimeout: TimeInterval, tickPollInterval: TimeInterval,
+                retries: Int = 12, alignToSecondBoundary: Bool = true) {
+        self.settle = settle
+        self.tickTimeout = tickTimeout
+        self.tickPollInterval = tickPollInterval
+        self.retries = retries
+        self.alignToSecondBoundary = alignToSecondBoundary
+    }
+
+    public static let upstream = SyncTimeTiming(settle: 1.2, tickTimeout: 4.0, tickPollInterval: 0.05)
+    /// For tests: the same two steps, shortened, and without the wait for the second to roll over.
+    /// The tick check still costs up to a second, because a packed device clock only advances once
+    /// per second.
+    public static let fast = SyncTimeTiming(settle: 0.02, tickTimeout: 2.0, tickPollInterval: 0.01,
+                                            retries: 2, alignToSecondBoundary: false)
 }
 
 /// `OmSource.SourceCategory` — the groups `DeviceListView.cs` puts rows into.

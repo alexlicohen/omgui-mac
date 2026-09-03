@@ -65,6 +65,19 @@ extension AppModel {
         presentNextRawCsv()
     }
 
+    /// Dismiss the Export/Tools sheet and run whatever it chains to.
+    ///
+    /// The chained presentation has to land in a *later* main-loop turn: assigning a new
+    /// `exportSheet` inside the same update that clears it leaves `.sheet(item:)` looking at a
+    /// nil→new transition during its own teardown, and the second dialog never appears — so
+    /// "Export Raw CSV" over three files silently exported only the first.
+    func closeExportSheet() {
+        let onClose = exportSheet?.onClose
+        exportSheet = nil
+        guard let onClose else { return }
+        DispatchQueue.main.async { onClose() }
+    }
+
     func presentNextRawCsv() {
         guard !pendingRawCsv.isEmpty else { return }
         let file = pendingRawCsv.removeFirst()

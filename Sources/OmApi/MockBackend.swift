@@ -138,6 +138,54 @@ public final class MockBackend: DeviceBackend, @unchecked Sendable {
     /// Delay between download progress steps.
     public var downloadStepDelay: TimeInterval = 0.01
 
+    // MARK: - Call recording (tests only)
+
+    /// One recorded call to a device-mutating entry point.
+    ///
+    /// The mock cannot make a quick format behave differently from a wipe — both leave a bare
+    /// header behind — so the *level* has to be observable, or nothing distinguishes the two
+    /// destructive paths and inverting the ternary in `OmDevice.clear` is a silent change.
+    public struct Call: Sendable, Equatable, CustomStringConvertible {
+        public var deviceId: UInt32
+        public var name: String
+        public var arguments: String
+
+        public init(deviceId: UInt32, name: String, arguments: String = "") {
+            self.deviceId = deviceId
+            self.name = name
+            self.arguments = arguments
+        }
+
+        public var description: String {
+            arguments.isEmpty ? "\(name)(\(deviceId))" : "\(name)(\(deviceId), \(arguments))"
+        }
+    }
+
+    private var _calls: [Call] = []
+
+    /// Every mutating call this backend has received, in order.
+    public var calls: [Call] {
+        lock.lock(); defer { lock.unlock() }
+        return _calls
+    }
+
+    /// `calls`, rendered as `"setSessionId(1234, 0)"` strings.
+    public var callDescriptions: [String] { calls.map(\.description) }
+
+    /// The erase levels `eraseAndCommit` was asked for, in order.
+    public func eraseLevels(for deviceId: UInt32? = nil) -> [EraseLevel] {
+        calls.filter { $0.name == "eraseAndCommit" && (deviceId == nil || $0.deviceId == deviceId!) }
+            .compactMap { call in EraseLevel.allCases.first { String(describing: $0) == call.arguments } }
+    }
+
+    public func clearCalls() {
+        lock.lock(); _calls.removeAll(); lock.unlock()
+    }
+
+    private func record(_ deviceId: UInt32, _ name: String, _ arguments: String = "") {
+        lock.lock(); _calls.append(Call(deviceId: deviceId, name: name, arguments: arguments)); lock.unlock()
+    }
+
     /// - Parameters:
     ///   - persistState: keep the mutable device state in `state.json` under `root`, so a
     ///     `record` in one CLI invocation is still visible to the next `status`. Tests turn this
@@ -278,12 +326,14 @@ public final class MockBackend: DeviceBackend, @unchecked Sendable {
     public func setTime(_ deviceId: UInt32, _ value: OmDateTime) throws {
         let d = try device(deviceId)
         guard let target = value.date() else { throw OmError.invalidArg }
+        record(deviceId, "setTime", String(value.raw))
         lock.lock(); d.clockOffset = target.timeIntervalSince(Date()); lock.unlock()
         savePersistedState()
     }
 
     public func setLed(_ deviceId: UInt32, _ state: LedState) throws {
         let d = try device(deviceId)
+        record(deviceId, "setLed", String(describing: state))
         lock.lock(); d.led = state; lock.unlock()
         savePersistedState()
         log("MOCK: \(d.spec.serialId) LED -> \(state)")
@@ -291,6 +341,7 @@ public final class MockBackend: DeviceBackend, @unchecked Sendable {
 
     public func setDebug(_ deviceId: UInt32, _ code: Int) throws {
         let d = try device(deviceId)
+        record(deviceId, "setDebug", String(code))
         lock.lock(); d.debug = code; lock.unlock()
         savePersistedState()
     }
@@ -304,6 +355,7 @@ public final class MockBackend: DeviceBackend, @unchecked Sendable {
 
     public func setDelays(_ deviceId: UInt32, start: OmDateTime, stop: OmDateTime) throws {
         let d = try device(deviceId)
+        record(deviceId, "setDelays", "\(start.raw), \(stop.raw)")
         lock.lock(); d.start = start; d.stop = stop; lock.unlock()
         savePersistedState()
     }
@@ -312,6 +364,7 @@ public final class MockBackend: DeviceBackend, @unchecked Sendable {
 
     public func setSessionId(_ deviceId: UInt32, _ value: UInt32) throws {
         let d = try device(deviceId)
+        record(deviceId, "setSessionId", String(value))
         lock.lock(); d.sessionId = value; lock.unlock()
         savePersistedState()
     }
@@ -321,6 +374,7 @@ public final class MockBackend: DeviceBackend, @unchecked Sendable {
     public func setMetadata(_ deviceId: UInt32, _ value: String) throws {
         guard value.utf8.count <= MetadataTools.annotationTotalLength else { throw OmError.invalidArg }
         let d = try device(deviceId)
+        record(deviceId, "setMetadata", "\"\(value)\"")
         lock.lock(); d.metadata = value; lock.unlock()
         savePersistedState()
     }
@@ -336,6 +390,7 @@ public final class MockBackend: DeviceBackend, @unchecked Sendable {
             throw OmError.invalidArg
         }
         if config.axisCount == 6 && !d.info.hasSyncGyro { throw OmError.invalidArg }
+        record(deviceId, "setAccelConfig", "rate: \(rate), range: \(range)")
         lock.lock(); d.config = config; lock.unlock()
         savePersistedState()
     }
@@ -344,12 +399,14 @@ public final class MockBackend: DeviceBackend, @unchecked Sendable {
 
     public func setMaxSamples(_ deviceId: UInt32, _ value: Int) throws {
         let d = try device(deviceId)
+        record(deviceId, "setMaxSamples", String(value))
         lock.lock(); d.maxSamples = value; lock.unlock()
         savePersistedState()
     }
 
     public func eraseAndCommit(_ deviceId: UInt32, level: EraseLevel) throws {
         let d = try device(deviceId)
+        record(deviceId, "eraseAndCommit", String(describing: level))
         switch level {
         case .none:
             // Commit: rewrite the header in place, keep the recorded data.
@@ -371,6 +428,7 @@ public final class MockBackend: DeviceBackend, @unchecked Sendable {
 
     public func beginDownload(_ deviceId: UInt32, to destination: String) throws {
         let d = try device(deviceId)
+        record(deviceId, "beginDownload", destination)
         lock.lock()
         if d.downloading { lock.unlock(); throw OmError.notValidState }
         d.downloading = true
@@ -420,6 +478,7 @@ public final class MockBackend: DeviceBackend, @unchecked Sendable {
 
     public func cancelDownload(_ deviceId: UInt32) throws {
         let d = try device(deviceId)
+        record(deviceId, "cancelDownload")
         lock.lock(); d.downloadCancelled = true; lock.unlock()
     }
 

@@ -34,6 +34,18 @@ public enum FlowMessages {
     public static let downloadFilenameTitle = "Download Filename"
     public static let deviceIdNotVerified = "The correct download file name cannot be established (device identifier not verified) -- you must reconnect the device and try again."
     public static let sessionIdNotVerified = "The correct download file name cannot be established (session identifier not verified) -- you must reconnect the device and try again."
+
+    /// Not an upstream string. Windows cannot fail this way, so OMGUI folds "the file will not
+    /// open at all" into the identity-mismatch message above — which on macOS sends a site round a
+    /// loop of reconnecting a device whose data file was never the problem.
+    public static func dataFileUnreadable(_ path: String) -> String {
+        "The device's data file could not be read:\n\n    \(path)\n\n"
+            + "Reconnecting the device will not help. If macOS has not been given access to "
+            + "removable volumes, allow it in System Settings ▸ Privacy & Security ▸ Files and "
+            + "Folders ▸ Removable Volumes (or grant Full Disk Access), then try again. "
+            + "Otherwise the recording on this device may be damaged."
+    }
+
     public static let overwriteTitle = "Overwrite File?"
     public static let downloadStatusTitle = "Download Status"
     public static let downloadInProgressTitle = "Download in progress"
@@ -106,8 +118,13 @@ public enum DownloadFlow {
         if device.isRecording != .stopped { return .failure("device is recording") }
         if !device.hasData { return .failure("device has no data") }
 
-        let metadata = FileMetadata(path: device.dataFilePath)
-        let map = metadata?.map ?? [:]
+        // A file that will not open at all is a different failure from one whose identity does not
+        // match: the mismatch message tells the operator to reconnect the device, which can never
+        // fix a denied removable-volume prompt or a damaged file.
+        guard let metadata = FileMetadata(path: device.dataFilePath) else {
+            return .failure(DownloadFlow.unreadableFileError)
+        }
+        let map = metadata.map
 
         let deviceIdString = FilenameTemplate.deviceIdString(device.deviceId)
         let fileDeviceIdString = map["DeviceId"]
@@ -139,6 +156,7 @@ public enum DownloadFlow {
 
     public static let deviceIdError = "Download filename (device identifier not verified)."
     public static let sessionIdError = "Download filename (session identifier not verified)."
+    public static let unreadableFileError = "Device data file could not be read."
 
     /// The whole button: resolve, prompt about overwrites, start each download, summarise.
     @discardableResult
@@ -161,6 +179,9 @@ public enum DownloadFlow {
                     prompt.warn(title: FlowMessages.downloadFilenameTitle, message: FlowMessages.deviceIdNotVerified)
                 } else if reason == sessionIdError {
                     prompt.warn(title: FlowMessages.downloadFilenameTitle, message: FlowMessages.sessionIdNotVerified)
+                } else if reason == unreadableFileError {
+                    prompt.warn(title: FlowMessages.downloadFilenameTitle,
+                                message: FlowMessages.dataFileUnreadable(device.dataFilePath))
                 }
             case .plan(let resolved):
                 plan = resolved
@@ -332,6 +353,25 @@ public enum RecordFlow {
     /// `DATAMODE=20` is what OMGUI writes to `SETTINGS.INI` for unpacked data on an AX3.
     public static let unpackedSettings = "DATAMODE=20\r\n"
 
+    /// The waits around the `SETTINGS.INI` write (upstream: 0.8 s, then 60 tries at 250 ms).
+    public struct Timing: Sendable, Equatable {
+        public var unpackedInitialDelay: TimeInterval
+        public var unpackedRetries: Int
+        public var unpackedRetryDelay: TimeInterval
+
+        public init(unpackedInitialDelay: TimeInterval, unpackedRetries: Int, unpackedRetryDelay: TimeInterval) {
+            self.unpackedInitialDelay = unpackedInitialDelay
+            self.unpackedRetries = unpackedRetries
+            self.unpackedRetryDelay = unpackedRetryDelay
+        }
+
+        public static let upstream = Timing(unpackedInitialDelay: 0.8, unpackedRetries: 60,
+                                            unpackedRetryDelay: 0.25)
+        /// For tests, where the mock volume never goes away.
+        public static let fast = Timing(unpackedInitialDelay: 0, unpackedRetries: 4,
+                                        unpackedRetryDelay: 0.01)
+    }
+
     public static func configLogLine(at date: Date,
                                      ok: Bool,
                                      deviceId: UInt32,
@@ -357,6 +397,7 @@ public enum RecordFlow {
     public static func perform(devices: [OmDevice],
                                settings: RecordingSettings,
                                progress: ProgressHandler?,
+                               timing: Timing = .upstream,
                                now: @Sendable () -> Date = { Date() }) -> Result {
         var result = Result()
         let total = max(devices.count, 1)
@@ -372,8 +413,6 @@ public enum RecordFlow {
             if device.isDownloading {
                 deviceError = "Device is downloading"
             } else {
-                let devicePath = device.devicePath
-
                 report(0, "session")
                 if deviceError == nil, !device.setSessionId(settings.sessionId, commit: false) {
                     deviceError = "Failed to set session ID"
@@ -413,10 +452,17 @@ public enum RecordFlow {
 
                 if settings.unpacked, !device.hasSyncGyro {
                     report(4, "unpacked setting")
-                    if devicePath.isEmpty {
-                        deviceError = "Failed to find drive to write configuration file."
-                    } else if !writeUnpackedSettings(to: devicePath) {
-                        deviceError = "Failed to write unpacked configuration file."
+                    // The commit re-enumerates the unit, and macOS can bring it back at a
+                    // different mount point (`/Volumes/AX317_01234 1`) while an empty directory
+                    // lingers at the old one — so resolve the path again, every try, rather than
+                    // reusing the one captured before the device was configured.
+                    if !writeUnpackedSettings(resolvingPathWith: { device.refreshInfo()?.volumePath ?? device.devicePath },
+                                              retries: timing.unpackedRetries,
+                                              initialDelay: timing.unpackedInitialDelay,
+                                              retryDelay: timing.unpackedRetryDelay) {
+                        deviceError = device.devicePath.isEmpty
+                            ? "Failed to find drive to write configuration file."
+                            : "Failed to write unpacked configuration file."
                     }
                 }
             }
@@ -434,24 +480,49 @@ public enum RecordFlow {
         return result
     }
 
+    /// The device's data file, which is what proves a `/Volumes` directory really is the device
+    /// and not a stale mount point left behind by the re-enumeration.
+    public static let deviceDataFileName = "CWA-DATA.CWA"
+
     /// Wait for the volume to re-mount, then write `SETTINGS.INI` (upstream: 0.8 s, then 60 tries
     /// at 250 ms).
+    ///
+    /// `resolvePath` is re-asked on every try, and the directory only counts once `CWA-DATA.CWA`
+    /// is in it: writing `DATAMODE=20` into an empty leftover mount point "succeeds" while the
+    /// device goes on recording packed data the pipeline cannot read.
+    @discardableResult
+    static func writeUnpackedSettings(resolvingPathWith resolvePath: () -> String,
+                                      retries: Int = 60,
+                                      initialDelay: TimeInterval = 0.8,
+                                      retryDelay: TimeInterval = 0.25) -> Bool {
+        if initialDelay > 0 { Thread.sleep(forTimeInterval: initialDelay) }
+        for attempt in 0..<max(1, retries) {
+            let devicePath = resolvePath()
+            if !devicePath.isEmpty {
+                var isDirectory: ObjCBool = false
+                let dataFile = (devicePath as NSString).appendingPathComponent(deviceDataFileName)
+                if FileManager.default.fileExists(atPath: devicePath, isDirectory: &isDirectory),
+                   isDirectory.boolValue,
+                   FileManager.default.fileExists(atPath: dataFile) {
+                    let configFile = (devicePath as NSString).appendingPathComponent("SETTINGS.INI")
+                    if (try? unpackedSettings.write(toFile: configFile, atomically: false, encoding: .ascii)) != nil {
+                        return true
+                    }
+                }
+            }
+            if attempt + 1 < max(1, retries) { Thread.sleep(forTimeInterval: retryDelay) }
+        }
+        return false
+    }
+
+    /// Fixed-path form, for a caller that already knows where the volume is.
+    @discardableResult
     static func writeUnpackedSettings(to devicePath: String,
                                       retries: Int = 60,
                                       initialDelay: TimeInterval = 0.8,
                                       retryDelay: TimeInterval = 0.25) -> Bool {
-        Thread.sleep(forTimeInterval: initialDelay)
-        let configFile = (devicePath as NSString).appendingPathComponent("SETTINGS.INI")
-        for _ in 0..<retries {
-            var isDirectory: ObjCBool = false
-            if FileManager.default.fileExists(atPath: devicePath, isDirectory: &isDirectory), isDirectory.boolValue {
-                if (try? unpackedSettings.write(toFile: configFile, atomically: false, encoding: .ascii)) != nil {
-                    return true
-                }
-            }
-            Thread.sleep(forTimeInterval: retryDelay)
-        }
-        return false
+        writeUnpackedSettings(resolvingPathWith: { devicePath }, retries: retries,
+                              initialDelay: initialDelay, retryDelay: retryDelay)
     }
 }
 
@@ -478,4 +549,166 @@ public struct IdentifyController: Sendable {
         }
         return (ticks & 1) == 1 ? .blue : .magenta
     }
+}
+
+// MARK: - Firmware
+
+/// `MainForm.CheckFirmware`'s blacklist half: the `firmware/bootload.ini` lookup that warns before
+/// Record and before Clear when a device is running a firmware version marked for update.
+///
+/// The bootloader half is not ported — the updater is a Windows `.cmd` driving a Windows-only
+/// bootloader — so where upstream offers to update, this offers the operator the choice to carry
+/// on or stop.
+public struct FirmwareBlacklist: Sendable, Equatable {
+
+    /// One blacklisted `<prefix>_<version>`, e.g. `CWA17_42`.
+    public struct Entry: Sendable, Equatable {
+        /// The blacklisted version key, e.g. `"CWA17_42"`.
+        public var version: String
+        /// `[section]` the key was found under, e.g. `"CWA17"`.
+        public var section: String
+        /// The section's `_version`, e.g. `"CWA17_45"`; nil when the file does not name one.
+        public var latest: String?
+        /// The value after `=`, or upstream's fallback wording when it is empty.
+        public var reason: String
+
+        public init(version: String, section: String, latest: String?, reason: String) {
+            self.version = version
+            self.section = section
+            self.latest = latest
+            self.reason = reason.trimmingCharacters(in: .whitespaces).isEmpty
+                ? FirmwareBlacklist.defaultReason : reason
+        }
+    }
+
+    /// `"The current version of the firmware is marked as needing an update."`
+    public static let defaultReason = "The current version of the firmware is marked as needing an update."
+
+    public var entries: [String: Entry]
+
+    public init(entries: [String: Entry] = [:]) { self.entries = entries }
+
+    /// `firmware/bootload.ini` as upstream ships it, so the check works before the file does.
+    ///
+    /// Kept in code because the app bundle's `Resources/` is not this port's to add to yet; a real
+    /// `firmware/bootload.ini` found on disk replaces it wholesale.
+    public static let builtIn = FirmwareBlacklist.parse("""
+        [CWA17]
+        _version=CWA17_45
+        CWA17_42=V42 is known to have a potential problem which can limit the recording duration.
+
+        [AX664]
+        _version=AX664_51
+        """)
+
+    /// Where upstream looks: `firmware/bootload.ini` under the current directory, then under the
+    /// executable's folder. The bundle's `Resources/firmware/bootload.ini` is the Mac equivalent.
+    public static func searchPaths(bundleResources: URL? = Bundle.main.resourceURL,
+                                   executable: URL? = Bundle.main.executableURL) -> [URL] {
+        var paths: [URL] = [URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("firmware/bootload.ini")]
+        if let executable {
+            paths.append(executable.deletingLastPathComponent().appendingPathComponent("firmware/bootload.ini"))
+        }
+        if let bundleResources {
+            paths.append(bundleResources.appendingPathComponent("firmware/bootload.ini"))
+        }
+        return paths
+    }
+
+    /// The first readable `bootload.ini` in `paths`, or the built-in table.
+    public static func load(paths: [URL] = FirmwareBlacklist.searchPaths()) -> FirmwareBlacklist {
+        for path in paths {
+            if let text = try? String(contentsOf: path, encoding: .utf8) { return parse(text) }
+        }
+        return builtIn
+    }
+
+    /// Upstream's "rough .INI parser", including its `=`-or-`:` split and its `_name` convention.
+    public static func parse(_ text: String) -> FirmwareBlacklist {
+        var latestVersion: [String: String] = [:]
+        var found: [(name: String, section: String, value: String)] = []
+        var section = ""
+        for rawLine in text.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty || line.hasPrefix(";") || line.hasPrefix("#") { continue }
+            if line.hasPrefix("["), line.hasSuffix("]") {
+                section = String(line.dropFirst().dropLast())
+                continue
+            }
+            guard let separator = line.firstIndex(where: { $0 == "=" || $0 == ":" }) else { continue }
+            let name = String(line[line.startIndex..<separator]).trimmingCharacters(in: .whitespaces)
+            let value = String(line[line.index(after: separator)...]).trimmingCharacters(in: .whitespaces)
+            if name.hasPrefix("_") {
+                if name == "_version" { latestVersion[section] = value }
+            } else {
+                found.append((name, section, value))
+            }
+        }
+        var entries: [String: Entry] = [:]
+        for item in found {
+            entries[item.name] = Entry(version: item.name, section: item.section,
+                                       latest: latestVersion[item.section], reason: item.value)
+        }
+        return FirmwareBlacklist(entries: entries)
+    }
+
+    /// `prefix + firmwareVersion`, where the prefix is the serial up to and including its `_`.
+    public static func versionKey(serialId: String, firmwareVersion: Int) -> String {
+        var prefix = "XXX00_"
+        if let underscore = serialId.firstIndex(of: "_") {
+            prefix = String(serialId[serialId.startIndex...underscore])
+        }
+        return prefix + String(firmwareVersion)
+    }
+
+    public func entry(serialId: String, firmwareVersion: Int?) -> Entry? {
+        guard let firmwareVersion else { return nil }
+        return entries[FirmwareBlacklist.versionKey(serialId: serialId, firmwareVersion: firmwareVersion)]
+    }
+
+    public static let title = "Firmware Update Recommended"
+
+    /// The message body, following `MainForm.cs`'s wording as far as the port can honour it.
+    public static func message(deviceId: UInt32, entry: Entry) -> String {
+        var text = "Device \(deviceId) is running firmware version \(entry.version).\n\n\(entry.reason)\n\n"
+        if let latest = entry.latest {
+            text += "The recommended version is \(latest), but the firmware updater is Windows-only "
+                + "and is not part of this port, so the device cannot be updated here.\n\n"
+        } else {
+            text += "The firmware updater is Windows-only and is not part of this port, so the "
+                + "device cannot be updated here.\n\n"
+        }
+        return text + "Continue with this device anyway?"
+    }
+}
+
+/// `CheckFirmware(devices)` — returns true when the caller should stop, exactly as upstream's
+/// "Don't do anything else now (user can press button again)".
+///
+/// Devices whose firmware version has not been read yet are skipped rather than re-polled: the
+/// poll thread owns device I/O (a blocking `ID` command from the main thread is what makes the
+/// property grid collide with a running flow), so an unknown version cannot be checked here.
+@MainActor
+@discardableResult
+public func checkFirmware(_ devices: [OmDevice],
+                          blacklist: FirmwareBlacklist,
+                          prompt: any UserPrompting,
+                          log: ((String) -> Void)? = nil) -> Bool {
+    for device in devices {
+        guard let entry = blacklist.entry(serialId: device.serialId,
+                                          firmwareVersion: device.firmwareVersion) else {
+            if device.firmwareVersion == nil {
+                log?("FIRMWARE: device \(device.deviceId) firmware version unknown (not checked).")
+            }
+            continue
+        }
+        log?("FIRMWARE: device \(device.deviceId) is running \(entry.version)"
+             + (entry.latest.map { " - recommended \($0)" } ?? "") + " (\(entry.reason))")
+        if !prompt.confirm(title: FirmwareBlacklist.title,
+                           message: FirmwareBlacklist.message(deviceId: device.deviceId, entry: entry)) {
+            return true
+        }
+    }
+    return false
 }
