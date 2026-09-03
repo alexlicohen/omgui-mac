@@ -171,17 +171,36 @@ int OmGetDataFileSize(int deviceId)
 int OmGetDataFilename(int deviceId, char *filenameBuffer)
 {
 	int retVal;
-	
-	retVal = OmGetDevicePath(deviceId, filenameBuffer);
+	int written;
+	char path[OM_MAX_PATH];
+
+	// PATCH (omgui-mac) C13: upstream strcat()'d "/CWA-DATA.CWA" (13 bytes) straight onto the
+	// device path.  OmGetDevicePath() fills its buffer from OmDeviceState.root, which holds up to
+	// OM_MAX_PATH-1 characters, so the concatenation overran the OM_MAX_PATH buffer omapi.h
+	// documents for this parameter -- and every internal caller here declares exactly that.  The
+	// path is now built with a bounded snprintf() into a private buffer and copied back only if
+	// it fits; an over-long volume path is an error rather than a stack smash.  The signature is
+	// deliberately unchanged (the Swift seam passes a larger buffer, which stays valid).
+	if (filenameBuffer == NULL) { return OM_E_POINTER; }
+	filenameBuffer[0] = '\0';
+
+	retVal = OmGetDevicePath(deviceId, path);
 	if (retVal != OM_OK)
 	{
 		return retVal;
 	}
 
-#if !defined(_WIN32)
-    strcat(filenameBuffer, "/");
+#if defined(_WIN32)
+	written = snprintf(filenameBuffer, OM_MAX_PATH, "%s%s", path, OM_DEFAULT_FILENAME);
+#else
+	written = snprintf(filenameBuffer, OM_MAX_PATH, "%s/%s", path, OM_DEFAULT_FILENAME);
 #endif
-    strcat(filenameBuffer, OM_DEFAULT_FILENAME);
+	if (written < 0 || written >= OM_MAX_PATH)
+	{
+		filenameBuffer[0] = '\0';       // _snprintf() does not terminate a truncated result
+		OmLog(0, "ERROR: Data filename for device %d does not fit in OM_MAX_PATH.\n", deviceId);
+		return OM_E_FAIL;
+	}
 
     // Check file existence/properties
 #if 0
@@ -311,6 +330,21 @@ int OmBeginDownloadingReference(int deviceId, int dataOffsetBlocks, int dataLeng
 }
 
 
+/** PATCH (omgui-mac) C3: take ownership of the download thread handle, clearing it under the
+ *  download mutex so that two threads racing to wait/cancel cannot both join it (joining a
+ *  pthread twice is undefined).  Returns 0 if another caller got there first. */
+static thread_t OmDownloadTakeThread(OmDeviceState *device, unsigned int deviceId)
+{
+    thread_t thread;
+    (void)deviceId;             // referenced by the Win32 OM_DEBUG_MUTEX form of mutex_lock()
+    mutex_lock(&om.downloadMutex);
+    thread = device->downloadThread;
+    device->downloadThread = 0;
+    mutex_unlock(&om.downloadMutex);
+    return thread;
+}
+
+
 int OmQueryDownload(int deviceId, OM_DOWNLOAD_STATUS *downloadStatus, int *downloadValue)
 {
     OM_DOWNLOAD_STATUS dStatus;
@@ -355,7 +389,8 @@ int OmWaitForDownload(int deviceId, OM_DOWNLOAD_STATUS *downloadStatus, int *dow
     {
         // Wait for download thread to terminate
         OmLog(3, "OmWaitForDownload() waiting for download thread to terminate...\n");
-        thread_join(device->downloadThread, NULL);
+        thread_t thread = OmDownloadTakeThread(device, (unsigned int)deviceId);   // PATCH (omgui-mac) C3
+        if (thread) { thread_join(thread, NULL); }
     }
 
     // Check completed download state
@@ -386,9 +421,39 @@ int OmCancelDownload(int deviceId)
 }
 
 
+/** PATCH (omgui-mac) C3: internal cancel-and-join.
+ *
+ *  OmCancelDownload() -> OmWaitForDownload() -> OmQueryDownload() refuses a device that is not
+ *  initialized and CONNECTED, which is exactly the state of a device being unplugged and of every
+ *  device during OmShutdown() (which clears om.initialized before it walks the table).  Both
+ *  paths therefore skipped the join and then freed the OmDeviceState the download thread was
+ *  still reading through -- a use-after-free and a double fclose() on quit.  This variant takes
+ *  the state directly and never consults either flag.
+ */
+void OmDownloadCancelJoin(OmDeviceState *device)
+{
+    thread_t thread;
+    unsigned int deviceId;
+
+    if (device == NULL) { return; }
+    deviceId = device->id;
+
+    device->downloadCancel = 1;
+
+    // The handle is taken under the download mutex but joined outside it: the download thread's
+    // own OmDoDownloadUpdate() takes the same mutex, so holding it across the join would deadlock.
+    thread = OmDownloadTakeThread(device, deviceId);
+    if (thread)
+    {
+        OmLog(3, "OmDownloadCancelJoin(%u) joining download thread...\n", deviceId);
+        thread_join(thread, NULL);
+    }
+}
+
+
 OmReaderHandle OmReaderOpenDeviceData(int deviceId)
 {
-    char filenameBuffer[256];
+    char filenameBuffer[OM_MAX_PATH];       // PATCH (omgui-mac) C13: was a bare 256
     int status;
     status = OmGetDataFilename(deviceId, filenameBuffer);
     if (OM_FAILED(status)) { return NULL; }

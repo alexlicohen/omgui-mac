@@ -71,6 +71,7 @@
 
 #include <ctype.h>
 #include <sys/stat.h>
+#include <sys/time.h>		// PATCH (omgui-mac) C17: gettimeofday() for the bounded stop
 
 
 #include "omapi-internal.h"
@@ -244,8 +245,21 @@ static const char *getUSBStringDescriptor(IOUSBDeviceInterface182 **usbDevice, U
 		return NULL;
 	}
   
+	// PATCH (omgui-mac) C14: wLenDone is unsigned, so a device that ACKs the request with a
+	// zero-length descriptor (a re-enumerating AX3 right after a FORMAT) made (wLenDone - 1) / 2
+	// wrap to 0x7FFFFFFF and the loop below write 2.1 billion bytes into a 128-byte heap buffer.
+	// Reject a descriptor too short to hold anything, clamp the count to what both `buffer` and
+	// the allocation can hold, and check the allocation.
+	if (request.wLenDone < 2)
+	{
+		OmLog(2, "ERROR: DeviceRequest returned a %u-byte string descriptor.\n", (unsigned int)request.wLenDone);
+		return NULL;
+	}
+	int count = (int)((request.wLenDone - 1) / 2);
+	if (count > (int)(sizeof(buffer) / sizeof(buffer[0])) - 1) { count = (int)(sizeof(buffer) / sizeof(buffer[0])) - 1; }
+	if (count > 127) { count = 127; }
 	char *stringValue = malloc(128);
-	int count = (request.wLenDone - 1) / 2;
+	if (stringValue == NULL) { return NULL; }
 	int i;
 	for (i = 0; i < count; i++)
 	{
@@ -390,12 +404,18 @@ static void DeviceNotification(void *refCon, io_service_t service, natural_t mes
 		// Call device removed
 		OmDeviceDiscovery(OM_DEVICE_REMOVED, deviceData->deviceId, deviceData->serialNumber, deviceData->serialDevice, deviceData->mountPath);
 
-		CFRelease(deviceData->deviceName);
+		if (deviceData->deviceName) { CFRelease(deviceData->deviceName); }
 		if (deviceData->deviceInterface)
 		{
 			(*deviceData->deviceInterface)->Release(deviceData->deviceInterface);
 		}
 		IOObjectRelease(deviceData->notification);
+		// PATCH (omgui-mac) C36: upstream leaked all three of these strings on every detach
+		// (getUSBStringDescriptor() malloc()s, findMount() strdup()s, findSerial() malloc()s),
+		// i.e. ~1.2 KB per attach/detach cycle on the app's hot path.
+		free((void *)deviceData->serialNumber);
+		free((void *)deviceData->mountPath);
+		free((void *)deviceData->serialDevice);
 		free(deviceData);
 	}
 }
@@ -480,14 +500,6 @@ static void DeviceAdded(void *refCon, io_iterator_t iterator)
 			deviceData->locationID = locationID;
 			OmLog(3, "->locationID: 0x%lx.\n", deviceData->locationID);
 			
-			// Use IOServiceAddInterestNotification type kIOGeneralInterest for this device (removal).
-			kr = IOServiceAddInterestNotification(gNotifyPort, usbDevice, kIOGeneralInterest, DeviceNotification, deviceData, &(deviceData->notification));
-			if (KERN_SUCCESS != kr)
-			{
-				OmLog(2, "MAC: WARNING: IOServiceAddInterestNotification returned 0x%08x.\n", kr);
-				break;
-			}
-
 			// printf("DEVICE: Find serial number...\n");
 			deviceData->serialNumber = getUSBSerialNumber(usbDevice);
 			if (deviceData->serialNumber == NULL || strlen(deviceData->serialNumber) == 0)
@@ -521,6 +533,21 @@ static void DeviceAdded(void *refCon, io_iterator_t iterator)
 			}
 			OmLog(3, "->serialDevice: %s\n", deviceData->serialDevice);
 
+			// PATCH (omgui-mac) C6: arm the removal notification only now that every lookup has
+			// succeeded.  Upstream registered it before the four steps above, each of which can
+			// break out of this scope, and the bare free() below then left a live
+			// kIOGeneralInterest notification holding a freed refCon: on the eventual unplug
+			// DeviceNotification() read a dangling DeviceData and passed garbage pointers to
+			// OmDeviceDiscovery(OM_DEVICE_REMOVED, ...).  findMount() gives up after ~8 s, so
+			// this was reachable simply by attaching a device that is still re-mounting after a
+			// FORMAT, or one waiting on "Allow accessory to connect".
+			kr = IOServiceAddInterestNotification(gNotifyPort, usbDevice, kIOGeneralInterest, DeviceNotification, deviceData, &(deviceData->notification));
+			if (KERN_SUCCESS != kr)
+			{
+				OmLog(2, "MAC: WARNING: IOServiceAddInterestNotification returned 0x%08x.\n", kr);
+				break;
+			}
+
 			// Call device connected
 			OmLog(2, "MAC: DEVICE: ... %s (#%u) port=%s path=%s\n", deviceData->serialNumber, deviceData->deviceId, deviceData->serialDevice, deviceData->mountPath);
 			OmDeviceDiscovery(OM_DEVICE_CONNECTED, deviceData->deviceId, deviceData->serialNumber, deviceData->serialDevice, deviceData->mountPath);
@@ -531,6 +558,18 @@ static void DeviceAdded(void *refCon, io_iterator_t iterator)
 		if (deviceData) {
 			OmLog(2, "MAC: ERROR: Overall problem determining device information.\n");
 			fprintf(stderr, "ERROR: Overall problem determining device information. (Run with OMDEBUG=2 for details).\n");
+			// PATCH (omgui-mac) C6/C36: explicit failure epilogue.  Upstream free()d the struct
+			// and leaked everything it owned -- the interest notification (see above), the
+			// deviceName CFString, the device interface, and the three heap strings.
+			if (deviceData->notification) { IOObjectRelease(deviceData->notification); }
+			if (deviceData->deviceName) { CFRelease(deviceData->deviceName); }
+			if (deviceData->deviceInterface)
+			{
+				(*deviceData->deviceInterface)->Release(deviceData->deviceInterface);
+			}
+			free((void *)deviceData->serialNumber);
+			free((void *)deviceData->mountPath);
+			free((void *)deviceData->serialDevice);
 			free(deviceData);
 		}
 
@@ -541,8 +580,20 @@ static void DeviceAdded(void *refCon, io_iterator_t iterator)
 
 
 static volatile int gStarted = 0;
+static volatile int gFinished = 0;      // PATCH (omgui-mac) C17: set when the thread has returned
+static volatile int gThreadValid = 0;   // PATCH (omgui-mac) C17: om.discoveryThread is joinable
 static pthread_mutex_t gStartMutex;
 static pthread_cond_t gStartCond;
+
+/** PATCH (omgui-mac) C17: publish a discovery-thread lifecycle change. */
+static void OmDiscoverySignal(int started, int finished)
+{
+	pthread_mutex_lock(&gStartMutex);
+	if (started) { gStarted = 1; }
+	if (finished) { gFinished = 1; }
+	pthread_cond_broadcast(&gStartCond);
+	pthread_mutex_unlock(&gStartMutex);
+}
 
 static thread_return_t OmDeviceDiscoveryThread(void *arg)
 {
@@ -562,6 +613,7 @@ static thread_return_t OmDeviceDiscoveryThread(void *arg)
 	{
 		OmLog(2, "ERROR: IOServiceMatching returned NULL.\n");
 		fprintf(stderr, "ERROR: IOServiceMatching returned NULL.\n");
+		OmDiscoverySignal(1, 1);	// PATCH (omgui-mac) C17: never leave OmDeviceDiscoveryStart() waiting
 		return thread_return_value(1);
 	}
 	
@@ -602,12 +654,15 @@ static thread_return_t OmDeviceDiscoveryThread(void *arg)
 	// Iterate once to get already-present devices and arm the notification	
 	DeviceAdded(NULL, gAddedIter);	
 
-	// Signal finished
-	OmLog(3, "DEVICE: Signalling...\n");
-	pthread_mutex_lock(&gStartMutex);
-	gStarted = 1;
-	pthread_cond_signal(&gStartCond);
-	pthread_mutex_unlock(&gStartMutex);
+	// PATCH (omgui-mac) C17: signal from inside the run loop rather than before it.  Upstream
+	// signalled here and papered over the gap with a 200 ms usleep() in OmDeviceDiscoveryStart();
+	// a quit inside that window (which --self-test reaches by construction) issued its
+	// CFRunLoopStop() before CFRunLoopRun() and then blocked forever in an unbounded join.
+	CFRunLoopPerformBlock(gRunLoop, kCFRunLoopDefaultMode, ^{
+		OmLog(3, "DEVICE: Run loop running.\n");
+		OmDiscoverySignal(1, 0);
+	});
+	CFRunLoopWakeUp(gRunLoop);
 
 	// while (!om.quitDiscoveryThread)
 	// Start the run loop, we will receive notifications
@@ -615,6 +670,7 @@ static thread_return_t OmDeviceDiscoveryThread(void *arg)
 	CFRunLoopRun();
 	
 	OmLog(3, "DEVICE: Run loop returned\n");
+	OmDiscoverySignal(1, 1);
     return thread_return_value(0);
 }
 
@@ -627,23 +683,30 @@ void OmDeviceDiscoveryStart(void)
 
 	// Initialize
 	gStarted = 0;
+	gFinished = 0;
 	pthread_mutex_init(&gStartMutex, 0);
 	pthread_cond_init(&gStartCond, NULL);
     pthread_mutex_lock(&gStartMutex);
 
     //OmUpdateDevices();
-    thread_create(&om.discoveryThread, NULL, OmDeviceDiscoveryThread, NULL);
+    if (thread_create(&om.discoveryThread, NULL, OmDeviceDiscoveryThread, NULL) != 0)
+    {
+        pthread_mutex_unlock(&gStartMutex);
+        OmLog(0, "ERROR: Could not create the device discovery thread.\n");
+        return;
+    }
+    gThreadValid = 1;
 
-	// Wait for event indicating the run loop is starting
-    while (!gStarted)
+	// Wait for the thread to report that its run loop is running (or that it gave up)
+    while (!gStarted && !gFinished)
 	{
 		OmLog(3, "DEVICE: Waiting...%d\n", gStarted);
         pthread_cond_wait(&gStartCond, &gStartMutex);
 	}
     pthread_mutex_unlock(&gStartMutex);	
 
-	// HACK: Delay a fraction to ensure the run loop really starts
-	usleep(200 * 1000);
+	// PATCH (omgui-mac) C17: the 200 ms "ensure the run loop really starts" usleep() is gone --
+	// the signal now comes from a block running inside the loop, so it is already running here.
 
 	OmLog(3, "DEVICE: Started...\n");
 }
@@ -651,13 +714,57 @@ void OmDeviceDiscoveryStart(void)
 /** Internal method to stop device discovery. */
 void OmDeviceDiscoveryStop(void)
 {
+	int attempt;
+	int finished;
+
     om.quitDiscoveryThread = 1;
+	if (!gThreadValid) { return; }		// Never started, or already stopped
+
 	OmLog(3, "DEVICE: Stopping run loop...\n");
 	// PATCH (omgui-mac): upstream called CFRunLoopStop() then immediately pthread_cancel(), which
 	// can tear the thread down inside CoreFoundation.  findMount() now polls quitDiscoveryThread,
 	// so the thread returns on its own and we join it.
-	if (gRunLoop != NULL) { CFRunLoopStop(gRunLoop); }
+	//
+	// PATCH (omgui-mac) C17: the join is no longer unbounded.  A single CFRunLoopStop() can be
+	// lost (the loop may not have entered yet, and CFRunLoopRun() can re-enter for a queued
+	// source), which turned Cmd-Q into a permanent hang; retry the stop for up to ~5 s and join
+	// only once the thread has actually reported that it returned.
+	pthread_mutex_lock(&gStartMutex);
+	for (attempt = 0; attempt < 100 && !gFinished; attempt++)
+	{
+		struct timespec ts;
+		struct timeval now;
+
+		pthread_mutex_unlock(&gStartMutex);
+		if (gRunLoop != NULL) { CFRunLoopStop(gRunLoop); }
+		pthread_mutex_lock(&gStartMutex);
+		if (gFinished) { break; }
+
+		gettimeofday(&now, NULL);
+		ts.tv_sec = now.tv_sec;
+		ts.tv_nsec = (long)(now.tv_usec + 50 * 1000) * 1000;
+		while (ts.tv_nsec >= 1000000000L) { ts.tv_nsec -= 1000000000L; ts.tv_sec++; }
+		pthread_cond_timedwait(&gStartCond, &gStartMutex, &ts);
+	}
+	finished = gFinished;
+	pthread_mutex_unlock(&gStartMutex);
+
+	gThreadValid = 0;
+	if (!finished)
+	{
+		// Bounded quit beats a correct one here: the thread is left running (and the notify port
+		// with it, since it is still using it), but the app can exit.
+		OmLog(0, "WARNING: Device discovery thread did not stop; detaching it.\n");
+		pthread_detach(om.discoveryThread);
+		return;
+	}
+
 	thread_join(om.discoveryThread, NULL);
+
+	// PATCH (omgui-mac) C17: upstream released neither, so every stop/start cycle leaked a mach
+	// port and left a second matching notification armed on the same iterator.
+	if (gAddedIter) { IOObjectRelease(gAddedIter); gAddedIter = 0; }
+	if (gNotifyPort != NULL) { IONotificationPortDestroy(gNotifyPort); gNotifyPort = NULL; }
 	gRunLoop = NULL;
 }
 

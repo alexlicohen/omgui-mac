@@ -126,12 +126,12 @@ int OmShutdown(void)
 	{
         if (record->state != NULL)
         {
-            // Cancel any pending downloads
-            if (record->state->deviceStatus == OM_DEVICE_CONNECTED)
-            {
-                OmLog(3, "OmCancelDownload(%d)...\n", record->id);
-                OmCancelDownload(record->id);
-            }
+            // PATCH (omgui-mac) C3: cancel and join unconditionally.  The CONNECTED guard skipped
+            // exactly the device that needs it -- one unplugged mid-download -- and OmShutdown()
+            // has already cleared om.initialized, which made the OmCancelDownload() call a no-op
+            // for every device.  free() then ran while the download thread was still reading.
+            OmLog(3, "OmDownloadCancelJoin(%d)...\n", record->id);
+            OmDownloadCancelJoin(record->state);
             free(record->state);
             record->state = NULL;
         }

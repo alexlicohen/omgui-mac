@@ -348,9 +348,22 @@ if (checksum != 0x0000) { fprintf(stderr, "WARNING: Checksum failed @%d (sector 
 	}
     else if ((state->data[25] & 0x0f) == 2)
 	{
+		// PATCH (omgui-mac) C37: numAxes is the raw high nibble of @25; zero there gave a
+		// bytesPerSample of 0 and made the maxSamples division below a divide-by-zero.
+		if (state->numAxes == 0) { return 0; }
 		bytesPerSample = state->numAxes * 2;		// @0 numAxesBPS:L == 2 -- 3x 16-bit signed
 	}
     else { return 0; }
+
+    // Frequency
+// TODO: This method only works down to 25 Hz, use float to support 12.5, 6.25 rates
+    sampleRate = 3200 / ((unsigned short)1 << (15 - (state->data[24] & 0x0f)));     // @24 sampleRate -- (3200/(1<<(15-(rate & 0x0f)))) Hz
+    // PATCH (omgui-mac) C37: integer division makes rate codes 0-3 come out as 0 Hz, and the
+    // block timing below divides by it.  arm64's UDIV/SDIV return 0 instead of trapping, so
+    // upstream quietly produced a zero-duration block that the viewer drops with no diagnostic
+    // -- and it is undefined behaviour regardless.  Reject the block.  (The computation moved up
+    // from below so the rejection happens before any samples are unpacked.)
+    if (sampleRate <= 0) { return 0; }
 
     // Read sequence number and events
     sequenceId = ((unsigned int)state->data[10] << 0) | ((unsigned int)state->data[11] << 8) | ((unsigned int)state->data[12] << 16) | ((unsigned int)state->data[13] << 24);
@@ -403,10 +416,6 @@ if (checksum != 0x0000) { fprintf(stderr, "WARNING: Checksum failed @%d (sector 
 			}
         }
     }
-
-    // Frequency
-// TODO: This method only works down to 25 Hz, use float to support 12.5, 6.25 rates
-    sampleRate = 3200 / ((unsigned short)1 << (15 - (state->data[24] & 0x0f)));     // @24 sampleRate -- (3200/(1<<(15-(rate & 0x0f)))) Hz
 
     // Extract timestamps
     {

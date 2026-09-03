@@ -126,6 +126,7 @@
 #include <fcntl.h>
 #include <time.h>
 #include <sys/timeb.h>
+#include <stdatomic.h>			/* PATCH (omgui-mac) C15: the cross-thread device fields below */
 
 #include "omapi.h"
 
@@ -160,7 +161,14 @@ typedef struct
 {
     // Device properties
     unsigned int id;                    /**< Device serial number */
-    OM_DEVICE_STATUS deviceStatus;      /**< Current connection status for this device. */
+    // PATCH (omgui-mac) C15: this device table is published by the discovery thread and walked
+    // by the caller's own thread (in OmGui, a 100 ms poll on the main thread).  The three fields
+    // that carry a device across that boundary are _Atomic, which makes every existing plain
+    // access an atomic (sequentially consistent) one without changing a single access site.
+    // Records are never removed from the list, and `deviceStatus` is the last field written when
+    // a device connects, so a reader that sees OM_DEVICE_CONNECTED also sees the port/root/
+    // serialId stored before it.
+    _Atomic OM_DEVICE_STATUS deviceStatus;  /**< Current connection status for this device. */
     char port[OM_MAX_CDC_PATH];         /**< Address to access the serial port. */
     char root[OM_MAX_MSD_PATH];         /**< Mounted root of the file system. */
     char dataFile[OM_MAX_PATH];         /**< Data filename. */
@@ -188,7 +196,7 @@ typedef struct
 struct OmDeviceRecord_tag;
 typedef struct OmDeviceRecord_tag {
 	unsigned int id;					/**< The device identifier */
-	OmDeviceState *state;				/**< The state of the device */
+	OmDeviceState *_Atomic state;		/**< The state of the device */   // PATCH (omgui-mac) C15
 	struct OmDeviceRecord_tag *next;	/**< The next device entry */
 } OmDeviceRecord;
 
@@ -226,7 +234,7 @@ typedef struct
     mutex_t downloadMutex;              /**< downloadMutex must be held to start/update/stop a download. */
 
     // Device table
-    OmDeviceRecord *deviceRecords;		/**< Linked list of pointers to devices that have been seen and their states */    // (Consider replacing with a hash table or balanced tree for efficiency). 
+    OmDeviceRecord *_Atomic deviceRecords;	/**< PATCH (omgui-mac) C15 (see OmDeviceState.deviceStatus). Linked list of pointers to devices that have been seen and their states */    // (Consider replacing with a hash table or balanced tree for efficiency). 
 } OmState;
 
 
@@ -269,6 +277,12 @@ int OmPortRelease(unsigned int deviceId);
 
 /** Get the device state for the given device id */
 OmDeviceState *OmDevice(int serial);
+
+/** PATCH (omgui-mac) C3: request cancellation of any download for this device and join its
+ *  thread.  Unlike OmCancelDownload() this does not require om.initialized or a CONNECTED
+ *  device, so it is usable from the removal and shutdown paths -- which is where the state it
+ *  protects used to be freed underneath a running download thread. */
+void OmDownloadCancelJoin(OmDeviceState *device);
 
 #ifdef __cplusplus
 }

@@ -148,6 +148,14 @@ void OmDeviceDiscovery(OM_DEVICE_STATUS status, unsigned int inSerialNumber, con
             deviceState->fd = -1;
         }
 
+		// PATCH (omgui-mac) C15: fill the state in *before* the record is published to the
+		// device table -- the table is walked from another thread, so a record must never be
+		// visible pointing at a half-initialised state.  deviceStatus stays the last write.
+		deviceState->id = serialNumber;
+		snprintf(deviceState->port, OM_MAX_CDC_PATH, "%s", port);
+		snprintf(deviceState->root, OM_MAX_MSD_PATH, "%s", volumePath);
+		snprintf(deviceState->serialId, OM_MAX_SERIALID_LEN, "%s", serialId);
+
 		// Update device state table
 		char written = 0;
 		for (OmDeviceRecord *record = om.deviceRecords; record != NULL; record = record->next)
@@ -177,13 +185,7 @@ void OmDeviceDiscovery(OM_DEVICE_STATUS status, unsigned int inSerialNumber, con
 		}
 
 
-OmLog(0, "DEBUG: Device added #%u  %s  %s\n", serialNumber, port, volumePath);
-
-        // Update the OmDeviceState structure
-        deviceState->id = serialNumber;
-        snprintf(deviceState->port, OM_MAX_CDC_PATH, "%s", port);
-        snprintf(deviceState->root, OM_MAX_MSD_PATH, "%s", volumePath);
-        snprintf(deviceState->serialId, OM_MAX_SERIALID_LEN, "%s", serialId);
+OmLog(2, "DEBUG: Device added #%u  %s  %s\n", serialNumber, port, volumePath);   // PATCH (omgui-mac) C39: was level 0
 
         // Download status
         //deviceState->downloadStatus = OM_DOWNLOAD_NONE;
@@ -195,7 +197,7 @@ OmLog(0, "DEBUG: Device added #%u  %s  %s\n", serialNumber, port, volumePath);
         // Call user's device callback
         if (om.deviceCallback != NULL)
         {
-OmLog(0, "DEBUG: callback for OM_DEVICE_CONNECTED...\n");
+OmLog(2, "DEBUG: callback for OM_DEVICE_CONNECTED...\n");   // PATCH (omgui-mac) C39: was level 0
             om.deviceCallback(om.deviceCallbackReference, (int)serialNumber, OM_DEVICE_CONNECTED);
         }
     }
@@ -207,11 +209,18 @@ OmLog(0, "DEBUG: callback for OM_DEVICE_CONNECTED...\n");
 		if (inSerialNumber >= 0xffff0000) { OmLog(0, "WARNING: Ignoring removed device with invalid serial number %u\n", inSerialNumber); return; }
 		serialNumber = inSerialNumber;
 
-OmLog(0, "DEBUG: Device removed: #%u\n", serialNumber);
+OmLog(2, "DEBUG: Device removed: #%u\n", serialNumber);   // PATCH (omgui-mac) C39: was level 0
 
         // Get the current OmDeviceState structure
         deviceState = OmDevice(serialNumber);
         if (deviceState == NULL) { return; }        // Removal called for a never-seen device (should not be possible from the DeviceFinder)
+
+        // PATCH (omgui-mac) C3: cancel and join any download *before* marking the device
+        // removed.  Upstream set the status first, after which OmCancelDownload()'s
+        // OmQueryDownload() rejected the now-not-CONNECTED device with OM_E_INVALID_DEVICE and
+        // returned without ever joining -- leaving a detached thread reading from the volume
+        // that is going away, and (on Cmd-Q) OmShutdown() free()ing the state underneath it.
+        OmDownloadCancelJoin(deviceState);
 
         // Set the removed status
         deviceState->deviceStatus = OM_DEVICE_REMOVED;
@@ -223,12 +232,11 @@ OmLog(0, "DEBUG: Device removed: #%u\n", serialNumber);
         // Download
         //deviceState->downloadStatus = OM_DOWNLOAD_NONE;
         //deviceState->downloadValue = 0;
-        OmCancelDownload(serialNumber);
 
         // Call user's device callback
         if (om.deviceCallback != NULL)
         {
-OmLog(0, "DEBUG: callback for OM_DEVICE_REMOVED...\n");
+OmLog(2, "DEBUG: callback for OM_DEVICE_REMOVED...\n");   // PATCH (omgui-mac) C39: was level 0
             om.deviceCallback(om.deviceCallbackReference, (int)serialNumber, OM_DEVICE_REMOVED);
         }
     }
@@ -450,8 +458,14 @@ static int OmPortOpen(const char *infile, char writeable)
 		tcgetattr(fd, &options);
 		options.c_cflag = (options.c_cflag | CLOCAL | CREAD | CS8) & ~(PARENB | CSTOPB | CSIZE | CRTSCTS);
 		options.c_lflag &= ~(ICANON | ECHO | ISIG); /* Enable data to be processed as raw input */
+		// PATCH (omgui-mac) C16: the port is blocking (the fcntl() above clears O_NDELAY) and
+		// upstream never set VMIN/VTIME, so read() blocked forever on a wedged device and
+		// OmPortReadLine()'s (and therefore OmCommand()'s) timeout could never be evaluated --
+		// a status poll from the UI thread would hang the app.  VMIN=0/VTIME=1 makes each read
+		// return after at most 0.1 s with whatever has arrived.
+		options.c_cc[VMIN] = 0;
+		options.c_cc[VTIME] = 1;    /* deciseconds */
 		tcsetattr(fd, TCSANOW, &options);
-		// #warning "Could we set up serial port timeout values?"
 	}
 
 	return fd;
@@ -501,6 +515,12 @@ OmLog(3, "- Overall timeout > %d", timeout);
 				return -1; 
 			}
 
+#if !defined(_WIN32)
+			// PATCH (omgui-mac) C16: a removed device fails read() immediately (EIO/ENXIO)
+			// rather than waiting out VTIME, so without this the retry loop spins a core flat
+			// until the caller's timeout expires.
+			usleep(1000);
+#endif
             continue;   // try to read again until timeout
         }
         else if (c == '\r' || c == '\n')

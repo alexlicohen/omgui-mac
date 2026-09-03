@@ -495,7 +495,9 @@ OmLog(2, "- Read line: \"%s\"", p);
             offset += len;
 
 // HACK: Temporary fix for Kim's problem (only until all FW 40 devices are updated)
-if (strcmp(expected, "COMMIT") == 0 && strncmp("no file, creatingCOMMIT", p, 23) == 0) { expectedPosition = p; break; }
+// PATCH (omgui-mac) C38: `expected` is documented as optional and is NULL-checked immediately
+// below -- this line dereferenced it first.
+if (expected != NULL && strcmp(expected, "COMMIT") == 0 && strncmp("no file, creatingCOMMIT", p, 23) == 0) { expectedPosition = p; break; }
 
             if (expected != NULL && strncmp(expected, p, strlen(expected)) == 0)
             {
