@@ -3,9 +3,10 @@
 A native Apple Silicon macOS port of [Axivity OMGUI](https://github.com/digitalinteraction/openmovement),
 the Windows configuration and download tool for AX3 and AX6 accelerometers.
 
-**Status: phases 0–1 (core library, vendoring, build system). No GUI yet.**
-This repository currently gives you a Swift package — `OmApi` — and a command-line tool,
-`omgui-cli`. The SwiftUI/AppKit app that mirrors OMGUI's window comes in a later phase.
+**Status: GUI + CLI shipping, signed/notarized DMG pipeline, 363 tests.**
+This repository gives you a Swift package (`OmApi`/`OmGuiCore`), the SwiftUI/AppKit app that
+mirrors OMGUI's window (`Sources/OmGui` — viewer, plugin host, export), and a command-line front
+end, `omgui-cli`.
 
 ## Why
 
@@ -32,10 +33,16 @@ Vendor/omconvert/        Vendored omconvert sources  -> build/helpers/omconvert
 Vendor/cwa-convert/      Vendored cwa-convert sources-> build/helpers/cwa-convert
 Vendor/PATCHES.md        Every local change to vendored code, and why
 Sources/OmApi/           Swift API mirroring upstream omapinet
+Sources/OmGuiCore/       Shared flow/device-state logic used by both front ends
+Sources/OmGui/           SwiftUI/AppKit app: viewer, plugin host, export
 Sources/omgui-cli/       Command-line front end
 Tests/OmApiTests/        XCTest suite
-scripts/build-helpers.sh Builds the arm64 helper binaries
-refs/                    Plan, device facts, OMGUI inventory, phase-1 notes
+Tests/OmGuiTests/        XCTest suite for OmGuiCore/OmGui
+scripts/build-app.sh     Assembles dist/OmGui.app, signs it
+scripts/build-dmg.sh     Packages the app into dist/OmGui-<version>.dmg
+scripts/release.sh       Full build+notarize+staple pipeline
+docs/RELEASE.md          Signing/notarizing/releasing the app
+refs/                    Device facts, OMGUI inventory, phase notes
 ```
 
 ## Build

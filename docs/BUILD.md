@@ -9,8 +9,8 @@
 | Toolchain | Swift 6 (developed on 6.3, Xcode 26.6) |
 | Dependencies | none — no SwiftPM packages beyond the standard library, no Homebrew |
 
-There is deliberately **no `.xcodeproj`**. The package is SwiftPM only; a later phase assembles
-the `.app` bundle with a script.
+There is deliberately **no `.xcodeproj`**. The package is SwiftPM only; `scripts/build-app.sh`
+assembles the `.app` bundle.
 
 ## Commands
 
@@ -29,8 +29,11 @@ bash scripts/build-helpers.sh --clean
 |---|---|---|
 | `COmApi` | C library | Vendored libomapi at `Vendor/libomapi`, `src/` compiled, `include/` public. Links CoreFoundation, IOKit, DiskArbitration. |
 | `OmApi` | Swift library | The API surface, mirroring upstream `omapinet`. Swift 6 language mode. |
+| `OmGuiCore` | Swift library | Shared flow/device-state guards used by both the GUI and the CLI. |
+| `OmGui` | executable | SwiftUI/AppKit app: viewer, plugin host, export. |
 | `omgui-cli` | executable | Command-line front end. |
-| `OmApiTests` | test | XCTest. |
+| `OmApiTests` | test | XCTest for `OmApi`. |
+| `OmGuiTests` | test | XCTest for `OmGuiCore`/`OmGui`. |
 
 `COmApi` deliberately vendors only the macOS device finder; the Windows and Linux finders and the
 Windows DLL export shim are not present. See `Vendor/libomapi/UPSTREAM.md`.
@@ -74,7 +77,7 @@ build/helpers/omconvert
 build/helpers/cwa-convert
 ```
 
-`build/` is gitignored. A later phase copies `build/helpers/` into `OmGui.app/Contents/Helpers`.
+`build/` is gitignored. `scripts/build-app.sh` copies `build/helpers/` into `OmGui.app/Contents/Helpers`.
 
 ## App bundle
 
@@ -88,6 +91,8 @@ scripts/release.sh [--version X.Y.Z]               # runs all four in that order
 
 `build-app.sh` builds the `OmGui` executable, runs `build-helpers.sh`, and assembles the bundle
 from `Resources/` (icon, `Info.plist.in` template, entitlements), signing with a Developer ID
-Application identity when one is installed and ad-hoc otherwise. `dist/` is gitignored. The app
-must be notarized and stapled *before* the DMG is built — see [`docs/RELEASE.md`](RELEASE.md) for
-why the order matters and for the full release process.
+Application identity — it fails if none is installed unless `--adhoc` is given, since a silent
+ad-hoc fallback would let an undistributable build pass as a real one. `dist/` is gitignored.
+`build-dmg.sh` refuses to package a Developer-ID-signed app that isn't notarized and stapled yet —
+the app must go through `notarize-app.sh` *before* the DMG is built — see
+[`docs/RELEASE.md`](RELEASE.md) for why the order matters and for the full release process.

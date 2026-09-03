@@ -1,10 +1,10 @@
 # Phase 4 notes — matching the study MOP's OMGUI
 
-Spec: the study's MOP-alignment steps document (removed from this tree). The upstream checkout in `upstream/openmovement` is
-`AssemblyVersion("1.0.0.45")` (`omgui/Properties/AssemblyInfo.cs:35`) — the same build the MOP's
-screenshots are of — so where the source and the MOP's description of a screenshot disagree, the
-source is the better witness to what V1.0.0.45 drew, not a rival to it. Each disagreement is
-recorded below.
+Spec: the study's MOP-alignment steps document (removed from this tree). The upstream checkout in
+`upstream/openmovement` is `AssemblyVersion("1.0.0.45")` (`omgui/Properties/AssemblyInfo.cs:35`) —
+the same build the MOP's screenshots are of — so where the source and the MOP's description of a
+screenshot disagree, the source is the better witness to what V1.0.0.45 drew, not a rival to it.
+Each disagreement is recorded below.
 
 ## What changed
 
@@ -53,7 +53,7 @@ Consequences taken:
   still be the literal `{MyDocuments}` template. The port prints the *expanded* path, because the
   MOP screenshot shows a real path (`C:\Users\ERA EEG\Documents\`) and `{MyDocuments}` would tell a
   site nothing.
-* **"Gyro (dps)" vs "Gyro (±dps)".** the study's MOP-alignment steps write the label without the ±;
+* **"Gyro (dps)" vs "Gyro (±dps)".** The study's MOP-alignment steps write the label without the ±;
   `DateRangeForm.Designer.cs:1024` is `"Gyro (±dps) "`. The designer wins — it *is* V1.0.0.45, and
   the ± survives in the study's transcription of the neighbouring "Range (±g)".
 * **`labelRateRangeSetting` reads "non-standard" at the MOP's settings.** It is blank only at
@@ -86,8 +86,8 @@ Consequences taken:
 
 ## Evidence
 
-`.build/release/OmGui --mock --self-test` prints 19 `CHECK` lines and exits non-zero if any fails
-(`Sources/OmGui/SelfTest+Mop.swift`); the transcript is
+`.build/release/OmGui --mock --self-test` prints one `CHECK` line per assertion and exits non-zero
+if any fails (`Sources/OmGui/SelfTest+Mop.swift`); the transcript is
 `refs/screenshots/self-test-transcript.txt`. The window-dependent claims — the title bar text, the
 "Default" header as the outline view actually draws it, the Device column fit, the Record rule as
 the toolbar renders it, and that every SF Symbol resolves on this OS — are asserted there rather
@@ -116,7 +116,7 @@ annotate.
    by the app or the installer. If a site refuses it, the device list stays empty and the only
    remedy is System Settings.
 3. **Gatekeeper on first launch.** Until the DMG is notarised, first launch needs the
-   right-click ▸ Open gesture. That is a distribution step (`scripts/notarize.sh`), not a code
+   right-click ▸ Open gesture. That is a distribution step (`scripts/release.sh`), not a code
    change.
 4. **The file naming convention is undecided.** §9.4.4 step 4 still says
    `ParticipantID_Visit_NamingConventionsTBD`; the rename stays manual until the convention exists.

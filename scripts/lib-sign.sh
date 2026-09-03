@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 #
-# Shared Developer ID Application identity resolution for build-app.sh, build-dmg.sh, and the
-# notarize scripts. Source this file, then:
+# Shared Developer ID Application identity resolution for build-app.sh and build-dmg.sh. Source
+# this file, then:
 #
-#   IDENTITY="$(resolve_sign_identity)"
+#   IDENTITY="$(resolve_sign_identity)" || IDENTITY_STATUS=$?
 #
 # Override the lookup entirely with SIGN_IDENTITY=<hash-or-name> in the environment. Without an
 # override, exactly one "Developer ID Application" identity must be present in the codesigning
 # keychain; two or more is a hard error (pick one via SIGN_IDENTITY) rather than a silent
 # first-match, since app and DMG resolving to different identities independently is exactly how
-# a mixed-team signature slips through.
+# a mixed-team signature slips through. resolve_sign_identity returns 1 (not 0) when nothing is
+# found — the caller decides whether that's fatal (Developer ID build) or expected (--adhoc).
+# The notarize scripts determine the identity independently by parsing `codesign -dvv` on the
+# already-signed artifact; they don't source this file.
 #
 resolve_sign_identity() {
     if [[ -n "${SIGN_IDENTITY:-}" ]]; then
@@ -20,7 +23,7 @@ resolve_sign_identity() {
     local matches count hash
     matches="$(security find-identity -v -p codesigning 2>/dev/null | grep 'Developer ID Application' || true)"
     if [[ -z "$matches" ]]; then
-        return 0
+        return 1
     fi
 
     count="$(printf '%s\n' "$matches" | grep -c .)"
