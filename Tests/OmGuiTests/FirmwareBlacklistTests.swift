@@ -128,20 +128,64 @@ final class FirmwareBlacklistTests: XCTestCase {
         XCTAssertTrue(prompter.confirms.isEmpty)
     }
 
-    /// An unread firmware version cannot be checked, and asking the device for it here would be
-    /// main-thread device I/O — so it is logged, not prompted about.
-    func testAnUnreadFirmwareVersionIsLoggedNotPrompted() throws {
+    // MARK: - M7: a version that has not been read is not a version that has been checked
+
+    /// The device is on the blacklisted firmware but has not been polled, so the check cannot see
+    /// it. Skipping it silently (what this used to do) leaves `guard !checkFirmware(…)` reading as
+    /// enforced while it is not — the case being eight AX3s plugged in and Record pressed a few
+    /// seconds later, before the 100 ms round robin has reached them all.
+    func testAnUnreadFirmwareVersionIsAQuestionNotASilentSkip() throws {
         let (harness, device) = try harness(firmware: 42, serial: "CWA17_01234")
         defer { harness.tearDown() }
         XCTAssertNil(device.firmwareVersion)
 
         let prompter = RecordingPrompter()
+        prompter.confirmAnswers = [false]
         var lines: [String] = []
-        XCTAssertFalse(checkFirmware([device], blacklist: .builtIn, prompt: prompter,
-                                     log: { lines.append($0) }))
-        XCTAssertTrue(prompter.confirms.isEmpty)
+        XCTAssertTrue(checkFirmware([device], blacklist: .builtIn, prompt: prompter,
+                                    log: { lines.append($0) }),
+                      "declining the unchecked-firmware question must stop the flow")
+        XCTAssertEqual(prompter.confirms.count, 1)
+        XCTAssertEqual(prompter.confirms.first?.title, FirmwareBlacklist.uncheckedTitle)
+        let message = try XCTUnwrap(prompter.confirms.first?.message)
+        XCTAssertTrue(message.contains("01234"), message)
         XCTAssertEqual(lines.count, 1)
         XCTAssertTrue(lines[0].contains("firmware version unknown"), lines[0])
+    }
+
+    func testTheOperatorCanContinueWithoutTheFirmwareCheck() throws {
+        let (harness, device) = try harness(firmware: 42, serial: "CWA17_01234")
+        defer { harness.tearDown() }
+
+        let prompter = RecordingPrompter()
+        prompter.confirmAnswers = [true]
+        XCTAssertFalse(checkFirmware([device], blacklist: .builtIn, prompt: prompter))
+        XCTAssertEqual(prompter.confirms.count, 1,
+                       "the blacklist cannot be consulted for a version that is not there")
+    }
+
+    /// Upstream's "Examining" pass: a caller that can safely read the device (the CLI, which has no
+    /// background poll) supplies one, and then there is nothing to ask about — except the
+    /// blacklist's own question, because the version turns out to be a blacklisted one.
+    func testASuppliedReaderIsUsedInsteadOfAskingTheOperator() throws {
+        let (harness, device) = try harness(firmware: 42, serial: "CWA17_01234")
+        defer { harness.tearDown() }
+        XCTAssertNil(device.firmwareVersion)
+
+        let prompter = RecordingPrompter()
+        prompter.confirmAnswers = [true]
+        var read: [UInt32] = []
+        XCTAssertFalse(checkFirmware([device], blacklist: .builtIn, prompt: prompter,
+                                     readVersion: { device in
+                                         read.append(device.deviceId)
+                                         device.refreshStatus()
+                                         return device.firmwareVersion
+                                     }))
+        XCTAssertEqual(read, [1234])
+        XCTAssertEqual(device.firmwareVersion, 42)
+        XCTAssertEqual(prompter.confirms.count, 1)
+        XCTAssertEqual(prompter.confirms.first?.title, FirmwareBlacklist.title,
+                       "with the version in hand the question is the blacklist's, not the unread one")
     }
 
     func testEveryBlacklistedDeviceInTheSelectionIsAskedAbout() throws {

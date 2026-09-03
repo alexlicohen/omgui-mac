@@ -40,9 +40,12 @@ let package = Package(
             dependencies: ["COmApi"]
         ),
 
+        // The CLI shares the GUI's flows (`DownloadFlow.resolve`, `checkFirmware`,
+        // `DeviceFlowPreflight`) rather than re-implementing them: a guard fixed in one has to be
+        // fixed in both, and the re-implementations drifted.
         .executableTarget(
             name: "omgui-cli",
-            dependencies: ["OmApi"]
+            dependencies: ["OmApi", "OmGuiCore"]
         ),
 
         // The macOS app. `OmGuiCore` holds every headless view model so the flows can be tested

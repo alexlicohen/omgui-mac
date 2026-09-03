@@ -35,6 +35,9 @@ public final class OmDevice: @unchecked Sendable {
     private var _downloadFailure: String?
     private var _lastDownloadedPath: String?
     private var _accelConfig: AccelConfig?
+    /// True when the last `RATE` read failed, so `_accelConfig` is a previous value (or nil) and
+    /// the next poll has to try again.
+    private var _accelConfigStale = false
     private var _syncTimeTiming: SyncTimeTiming = .upstream
 
     init(api: OmApi, backend: DeviceBackend, deviceId: UInt32) {
@@ -93,6 +96,10 @@ public final class OmDevice: @unchecked Sendable {
     /// clear. Reading it costs nothing: `accelConfig()` is a 2 s-timeout `RATE` round trip, and a
     /// property grid that calls it on every selection change serialises against the flows.
     public var cachedAccelConfig: AccelConfig? { withLock { _accelConfig } }
+
+    /// True when the last attempt to read `cachedAccelConfig` from the device failed: the value
+    /// (if any) is the last one that was read successfully, and the next poll will try again.
+    public var accelConfigIsStale: Bool { withLock { _accelConfigStale } }
 
     /// How long `syncTime()` waits. `.upstream` is what `OmDevice.cs` does; tests shorten it.
     public var syncTimeTiming: SyncTimeTiming {
@@ -196,6 +203,7 @@ public final class OmDevice: @unchecked Sendable {
             _warning = .none
             _lastUpdate = nil
             _accelConfig = nil
+            _accelConfigStale = false
             if value { _info = try? backend.info(deviceId) }
         }
     }
@@ -299,16 +307,31 @@ public final class OmDevice: @unchecked Sendable {
                 withLock { _sessionId = session }
             } else { error |= 0x08 }
 
-            // Not one of OMGUI's five status reads (so it does not feed `error`/`validData`), but
-            // read here for the same reason they are: the property grid needs the value and this
-            // is the only thread allowed to ask the device for it.
-            if let raw = try? backend.accelConfig(deviceId),
-               let config = AccelConfig(apiRate: raw.rate, apiRange: raw.range) {
-                withLock { _accelConfig = config }
-            }
-
             changed = true
             if error == 0 { withLock { _validData = true } }
+        }
+
+        // Not one of OMGUI's five status reads (so it does not feed `error`/`validData`), but read
+        // on this thread for the same reason they are: the property grid needs the value and the
+        // poll is the only thread allowed to ask the device for it.
+        //
+        // Deliberately *outside* the one-shot `!validData` block above. Inside it, a single `RATE`
+        // timeout blanked the Sampling rows for the rest of the session: `PropertyGrid` renders
+        // `cachedAccelConfig` and nothing else ever re-reads it. A failed read now keeps the
+        // last-good value and marks it stale, and the next poll tries again.
+        if error == 0, withLock({ _accelConfig == nil || _accelConfigStale }) {
+            if let raw = try? backend.accelConfig(deviceId),
+               let config = AccelConfig(apiRate: raw.rate, apiRange: raw.range) {
+                let differs = withLock { () -> Bool in
+                    let differs = _accelConfig != config
+                    _accelConfig = config
+                    _accelConfigStale = false
+                    return differs
+                }
+                if differs { changed = true }
+            } else {
+                withLock { _accelConfigStale = true }
+            }
         }
 
         if error != 0 {
@@ -323,6 +346,18 @@ public final class OmDevice: @unchecked Sendable {
             _hasChanged = false
             return c
         }
+    }
+
+    /// Re-read *everything* `update()` caches, not just the battery.
+    ///
+    /// `update(force:)` only bypasses the poll interval; the version/time/delays/session block is
+    /// gated on `validData`, which is set on the first successful poll and cleared only by a
+    /// re-attach. A caller that has just changed the device (a clear, say) and wants to print what
+    /// the device now reports has to drop `validData` first, or it prints the state it assumed.
+    @discardableResult
+    public func refreshStatus(resetIfUnresponsive: Int = 0) -> Bool {
+        withLock { _validData = false }
+        return update(resetIfUnresponsive: resetIfUnresponsive, force: true)
     }
 
     // MARK: - Settings and commands
@@ -350,7 +385,9 @@ public final class OmDevice: @unchecked Sendable {
         var effective = config
         if !hasSyncGyro { effective.gyro = nil }
         try backend.setAccelConfig(deviceId, rate: effective.apiRate, range: effective.apiRange)
-        withLock { _accelConfig = effective }
+        // A write that the device accepted is as good as a read: the cache is accurate again, so
+        // the poll has nothing to re-read.
+        withLock { _accelConfig = effective; _accelConfigStale = false }
         markChanged()
     }
 
@@ -414,7 +451,21 @@ public final class OmDevice: @unchecked Sendable {
     @discardableResult
     public func syncTime(retries: Int? = nil) -> Bool {
         let timing = syncTimeTiming
-        withLock { _warning = .none }
+        // Upstream clears the warning here ("reset warning (as it was time-based anyway)") and
+        // never puts it back. A *failed* sync leaves the device's clock exactly as it was, so the
+        // DAMAGED?/DISCHARGED? finding still stands -- and `update()` re-derives it only in its
+        // one-shot `!validData` branch, so nothing would ever restore it: the row would silently
+        // lose its prefix and `openRecordingSettings`'s abort/retry/ignore prompt would stop
+        // firing. Clear it only once the clock has been set *and* verified.
+        let previousWarning = withLock { () -> DeviceWarning in
+            let previous = _warning
+            _warning = .none
+            return previous
+        }
+        func restoreWarning() {
+            guard previousWarning != .none else { return }
+            withLock { if _warning == .none { _warning = previousWarning } }
+        }
         var remaining = retries ?? timing.retries
         var lastRead: OmDateTime?
 
@@ -439,7 +490,7 @@ public final class OmDevice: @unchecked Sendable {
             break
         }
 
-        guard let lastRead else { return false }
+        guard let lastRead else { restoreWarning(); return false }
         markChanged()
         api.deviceChanged(self)
 
@@ -447,12 +498,15 @@ public final class OmDevice: @unchecked Sendable {
         // within a few seconds of now.
         let checkStart = Date()
         while true {
-            guard let current = try? backend.time(deviceId) else { return false }
+            guard let current = try? backend.time(deviceId) else { restoreWarning(); return false }
             if current.raw > lastRead.raw, let currentDate = current.date(),
                Date().timeIntervalSince(currentDate) < 5 {
                 return true
             }
-            if Date().timeIntervalSince(checkStart) > timing.tickTimeout { return false }
+            if Date().timeIntervalSince(checkStart) > timing.tickTimeout {
+                restoreWarning()
+                return false
+            }
             Thread.sleep(forTimeInterval: timing.tickPollInterval)
         }
     }
@@ -468,7 +522,15 @@ public final class OmDevice: @unchecked Sendable {
         failed = ((try? backend.setMetadata(deviceId, "")) == nil) || failed
         failed = ((try? backend.setDelays(deviceId, start: .infinite, stop: .infinite)) == nil) || failed
         let defaults = AccelConfig.deviceDefault
-        failed = ((try? backend.setAccelConfig(deviceId, rate: defaults.apiRate, range: defaults.apiRange)) == nil) || failed
+        // Through `OmDevice.setAccelConfig`, exactly as Record does: it is the only writer that
+        // refreshes `_accelConfig`, and that cache is what the property grid renders. Writing
+        // straight to the backend here left the grid showing the *old* rate and range whenever a
+        // later step (a 15 s `FORMAT WC`, say) failed.
+        do {
+            try setAccelConfig(defaults)
+        } catch {
+            failed = true
+        }
         failed = ((try? backend.eraseAndCommit(deviceId, level: wipe ? .wipe : .quickFormat)) == nil) || failed
 
         if !failed {
@@ -477,9 +539,12 @@ public final class OmDevice: @unchecked Sendable {
                 _startTime = .infinite
                 _stopTime = .infinite
                 _downloadedThisSession = false
-                _accelConfig = defaults
             }
             if withLock({ _warning }) != .none { _ = syncTime() }
+        } else {
+            // Some part of the sequence did not land, so what the device is actually configured
+            // with is now unknown: mark the cache stale and let the next poll re-read it.
+            withLock { _accelConfigStale = true }
         }
         markChanged()
         api.deviceChanged(self)

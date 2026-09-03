@@ -9,10 +9,10 @@ Usage:
   omgui-cli identify [--led N] [--device ID]... [--mock]
   omgui-cli record   --session N [--rate HZ] [--range G] [--gyro DPS] [--low-power]
                      [--immediate | --start "YYYY-MM-DD HH:MM:SS" --stop "YYYY-MM-DD HH:MM:SS"]
-                     [--flash] [--device ID]... [--mock] [key=value]...
+                     [--flash] [--yes] [--device ID]... [--mock] [key=value]...
   omgui-cli download --workspace DIR [--template T] [--overwrite] [--force] [--quiet]
                      [--device ID]... [--mock]
-  omgui-cli clear    (--device ID... | --all) [--quick] [--yes] [--mock]
+  omgui-cli clear    (--device ID... | --all) [--quick] [--yes] [--force] [--mock]
 
 Options:
   --mock            Use the built-in fake devices instead of real hardware
@@ -20,7 +20,11 @@ Options:
   --device ID       Act on this device only; repeat for several. Default: every attached device.
   --all             clear only: act on every attached device (there is no implicit default,
                     because clear erases the recording).
-  --yes             clear only: skip the confirmation question.
+  --yes             Answer the flows' questions with "yes": clear's confirmation, and the
+                    firmware-blacklist / firmware-not-yet-read questions record and clear ask.
+  --force           clear: also erase devices that are recording and already hold data, which
+                    OMGUI's Clear button refuses. download: write the file even when its name
+                    cannot be verified against the device's own data file.
   --rate HZ         3200 1600 800 400 200 100 50 25 12.5 6.25   (default 100)
   --range G         2 4 8 16                                    (default 8)
   --gyro DPS        0 125 250 500 1000 2000  (AX6 only; ignored on an AX3)
@@ -35,6 +39,10 @@ Options:
 Exit codes: 0 success, 1 usage error, 2 no devices found, 3 operation failed.
 """
 
+/// On the main actor because the commands are: they run the same `OmGuiCore` flows the app does,
+/// and those are `@MainActor` for the sake of the message boxes they put up. Top-level code is on
+/// the main actor already, so `exit(run())` below needs nothing else.
+@MainActor
 func run() -> Int32 {
     setvbuf(stdout, nil, _IOLBF, 0)   // keep progress output interleaved correctly when piped
     let arguments = Array(CommandLine.arguments.dropFirst())

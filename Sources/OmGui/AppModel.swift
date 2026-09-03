@@ -102,9 +102,11 @@ final class AppModel: ObservableObject {
     private var refreshCounter = 0
     private var identify = IdentifyController()
     private var identifyDevices: [OmDevice] = []
-    private var pollInFlight = false
+    /// `MainForm.refreshTimer.Enabled` plus `backgroundWorkerUpdate.IsBusy`, in a type the test
+    /// suite can reach (the guards used to live only in this file, which `swift test` never loads).
+    let gate = BackgroundTaskGate()
     /// `MainForm.refreshTimer.Enabled == false` — set while a foreground flow owns the devices.
-    private(set) var backgroundTasksBlocked = false
+    var backgroundTasksBlocked: Bool { gate.blocked }
     /// `firmware/bootload.ini`, read once (`MainForm.CheckFirmware` re-reads it per click).
     private lazy var firmwareBlacklist = FirmwareBlacklist.load()
     private var logHandle: FileHandle?
@@ -142,7 +144,8 @@ final class AppModel: ObservableObject {
     func start() {
         // `--self-test` drives Clear/Wipe, Record and Stop with every message box auto-answered.
         // Refuse before the API is even started if that would reach real hardware.
-        if options.selfTestDirectory != nil, !(api.backend is MockBackend) {
+        if SelfTestGuard.mustRefuse(selfTestRequested: options.selfTestDirectory != nil,
+                                    backend: api.backend) {
             SelfTest.refuseNonMockBackend(named: api.backend.name)
         }
         for warning in options.warnings { log(warning) }
@@ -239,10 +242,13 @@ final class AppModel: ObservableObject {
                 // The transfer itself finished; publishing it did not. Say so loudly: the operator
                 // decides whether to clear the device on the strength of this line.
                 log("DOWNLOAD-FAILED: \(deviceText) - \(reason)")
-                prompter.warn(title: FlowMessages.errorTitle,
-                              message: "The download from device \(device.deviceId) could not be saved:\n\n    "
-                                + (plan?.finalPath.path ?? reason)
-                                + "\n\n\(reason)\n\nThe device has NOT been downloaded -- do not clear it.")
+                // The path line is the whole point of this alert, so it is only claimed when the
+                // plan is still in hand; without it the reason used to be printed twice and the
+                // file named not at all.
+                var message = "The download from device \(device.deviceId) could not be saved"
+                if let plan { message += ":\n\n    " + plan.finalPath.path }
+                message += "\n\n\(reason)\n\nThe device has NOT been downloaded -- do not clear it."
+                prompter.warn(title: FlowMessages.errorTitle, message: message)
             } else {
                 log(String(format: "Download error (0x%X): %@", device.downloadValue, deviceText))
             }
@@ -289,23 +295,25 @@ final class AppModel: ObservableObject {
     // MARK: - Polling (`refreshTimer_Tick`)
 
     private func tick() {
-        // `BlockBackgroundTasks` disables the timer outright; the flag is the same thing for a
+        // `BlockBackgroundTasks` disables the timer outright; the gate is the same thing for a
         // `Timer` that has to survive to be re-enabled.
-        guard !backgroundTasksBlocked else { return }
+        guard !gate.blocked else { return }
 
         refreshCounter += 1
         var doIdentify = false
         if refreshCounter % 5 == 0 { doIdentify = true }
 
-        guard !pollInFlight else { return }
+        // Checked here as well as in `beginPoll()` so a tick that finds a poll already running
+        // leaves `refreshIndex` alone: the round robin must not skip a device.
+        guard !gate.pollInFlight else { return }
 
         if doIdentify && identify.isRunning {
             let state = identify.advance()
             let targets = identifyDevices
-            pollInFlight = true
+            guard gate.beginPoll() else { return }
             Task.detached {
                 for device in targets { _ = device.setLed(state) }
-                await MainActor.run { self.pollInFlight = false }
+                await MainActor.run { self.gate.endPoll() }
             }
             return
         }
@@ -317,12 +325,12 @@ final class AppModel: ObservableObject {
         refreshIndex += 1
         guard let device = devicesById[deviceId] else { return }
 
-        pollInFlight = true
+        guard gate.beginPoll() else { return }
         let resetIfUnresponsive = options.resetIfUnresponsive
         Task.detached {
             let changed = device.update(resetIfUnresponsive: resetIfUnresponsive)
             await MainActor.run {
-                self.pollInFlight = false
+                self.gate.endPoll()
                 if changed { self.rebuildRows() }
             }
         }
@@ -508,16 +516,23 @@ final class AppModel: ObservableObject {
     func clear(shiftHeld: Bool) {
         recordingConfirmation = nil
         let wipe = ClearFlow.wipeRequested(shiftHeld: shiftHeld)
-        let selection = selectedDevices
-        guard ensureNoSelectedDownloading(selection, prompt: prompter) else { return }
-        let devices = selection.filter { !$0.isDownloading }
+        let devices = selectedDevices
 
-        // `CheckFirmware(devices)` — upstream checks before Clear as well as before Record.
-        guard !checkFirmware(devices, blacklist: firmwareBlacklist, prompt: prompter,
-                             log: { [weak self] in self?.log($0) }) else { return }
+        // `EnsureNoSelectedDownloading` then `CheckFirmware(devices)` — upstream checks both
+        // before Clear as well as before Record. `omgui-cli clear` runs the same preflight.
+        //
+        // `refuseRecordingWithData` stays off here: `DeviceToolbarState.clear` has already greyed
+        // the button out for a device that is recording and holds data (`ClearGuard`), which is
+        // the gate the CLI has to reproduce because it has no toolbar.
+        if let refusal = DeviceFlowPreflight.run(devices: devices, blacklist: firmwareBlacklist,
+                                                 prompt: prompter,
+                                                 log: { [weak self] in self?.log($0) }) {
+            log("Clear not started: \(refusal.description)")
+            return
+        }
 
         guard prompter.confirm(title: windowTitle,
-                               message: ClearFlow.promptMessage(wipe: wipe, count: selection.count)) else { return }
+                               message: ClearFlow.promptMessage(wipe: wipe, count: devices.count)) else { return }
 
         dataViewerSource = nil
         let title = ClearFlow.progressTitle(wipe: wipe)
@@ -558,11 +573,15 @@ final class AppModel: ObservableObject {
     func openRecordingSettings() {
         recordingConfirmation = nil
         let devices = selectedDevices
-        guard ensureNoSelectedDownloading(devices, prompt: prompter) else { return }
 
-        // `CheckFirmware(devices)` — before the damaged-device warnings, as upstream orders them.
-        guard !checkFirmware(devices, blacklist: firmwareBlacklist, prompt: prompter,
-                             log: { [weak self] in self?.log($0) }) else { return }
+        // `EnsureNoSelectedDownloading` then `CheckFirmware(devices)`, before the damaged-device
+        // warnings, as upstream orders them.
+        if let refusal = DeviceFlowPreflight.run(devices: devices, blacklist: firmwareBlacklist,
+                                                 prompt: prompter,
+                                                 log: { [weak self] in self?.log($0) }) {
+            log("Record not started: \(refusal.description)")
+            return
+        }
 
         for device in devices where device.warning == .damaged {
             var decided = false
@@ -598,14 +617,12 @@ final class AppModel: ObservableObject {
             RecordFlow.perform(devices: devices, settings: settingsModel, progress: progress)
         } completion: { [weak self] result in
             guard let self else { return }
-            var configLogFailed = false
-            for line in result.logLines {
-                self.log(line)
-                if let configLog, !DownloadLog.append(line, to: configLog) { configLogFailed = true }
-            }
+            for line in result.logLines { self.log(line) }
             // An unwritable -configlog path silently loses the AX3-CONFIG-OK/ERROR rows a site
             // files against the recording, so it gets the same warning the download log gets.
-            if configLogFailed, let configLog { self.warnLogAppendFailed(configLog, kind: "configuration") }
+            if let failedPath = ConfigLog.append(result.logLines, to: configLog) {
+                self.warnLogAppendFailed(failedPath, kind: "configuration")
+            }
             // The line a site copies into their study's configuration form ("Date recording initiated in OMGUI").
             let now = Date()
             let confirmations = result.configured.map {
@@ -624,26 +641,11 @@ final class AppModel: ObservableObject {
     // MARK: - Background tasks (`BlockBackgroundTasks` / `EnableBackgroundTasks`)
 
     /// `MainForm.BlockBackgroundTasks` — stop polling before a foreground flow touches the
-    /// devices.
-    ///
-    /// Without this the 100 ms poll runs `update()` (an `ID`/`BATT`/`TIME` round trip, and a
-    /// `reset()` after every third failure) on one device while `RecordFlow` is part-way through
-    /// configuring another. `OmPortAcquire` refuses the second opener outright, so the visible
-    /// result is a device that took its delays but not its interval: configured, not recording.
-    func blockBackgroundTasks() { backgroundTasksBlocked = true }
+    /// devices. See `BackgroundTaskGate`.
+    func blockBackgroundTasks() { gate.block() }
 
     /// `MainForm.EnableBackgroundTasks`.
-    func enableBackgroundTasks() { backgroundTasksBlocked = false }
-
-    /// Upstream spins on `backgroundWorkerUpdate.IsBusy` with `Application.DoEvents()`; awaiting
-    /// is the same wait without blocking the main actor the poll needs to finish on.
-    private func drainBackgroundPoll(timeout: TimeInterval = 5) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while pollInFlight, Date() < deadline {
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
-        if pollInFlight { log("WARNING: a device poll was still running after \(Int(timeout)) s.") }
-    }
+    func enableBackgroundTasks() { gate.enable() }
 
     /// `ShowProgressWithBackground` — a modal progress sheet over a background worker, with the
     /// poll timer blocked for its duration.
@@ -658,7 +660,22 @@ final class AppModel: ObservableObject {
         blockBackgroundTasks()
 
         Task { @MainActor in
-            await drainBackgroundPoll()
+            // Upstream spins on `backgroundWorkerUpdate.IsBusy` with no cap; awaiting is the same
+            // wait without blocking the main actor the poll needs to finish on. A poll that has
+            // not finished inside `BackgroundTaskGate.defaultDrainTimeout` is wedged, and running
+            // the flow beside it is precisely the failure `blockBackgroundTasks` exists to
+            // prevent — so the flow is abandoned rather than started.
+            guard await self.gate.drainPoll() else {
+                self.progressSheet = nil
+                self.progress = nil
+                self.enableBackgroundTasks()
+                let seconds = Int(self.gate.drainTimeout)
+                self.log("ERROR: \(title) was not started — a device poll was still running after \(seconds) s.")
+                self.prompter.warn(title: FlowMessages.errorTitle,
+                                   message: FlowMessages.pollStillRunning(seconds: seconds))
+                self.updateStatus()
+                return
+            }
             let handler: ProgressHandler = { report in
                 Task { @MainActor in
                     if report.percent >= 0 { self.progress = Double(report.percent) / 100.0 }

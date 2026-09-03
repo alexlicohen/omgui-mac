@@ -35,6 +35,11 @@ final class FaultBackend: DeviceBackend, @unchecked Sendable {
         lock.lock(); failing.formUnion(operations); lock.unlock()
     }
 
+    /// Stop failing an operation, so a test can show that the next attempt recovers.
+    func succeed(_ operations: Operation...) {
+        lock.lock(); failing.subtract(operations); lock.unlock()
+    }
+
     /// A dead RTC crystal: the device latches `setTime` and reads the value back unchanged, but
     /// the clock never advances.
     var frozenClock: Bool {

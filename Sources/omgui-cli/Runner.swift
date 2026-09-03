@@ -1,5 +1,6 @@
 import Foundation
 import OmApi
+import OmGuiCore
 
 /// Blocks the calling thread until every tracked download finishes, so the CLI can stay
 /// synchronous while backend callbacks arrive on other threads.
@@ -100,5 +101,43 @@ final class Runner: @unchecked Sendable {
             chosen.append(device)
         }
         return chosen
+    }
+
+    /// `MainForm`'s preflight, run before Record and before Clear (`DeviceFlowPreflight`).
+    ///
+    /// The CLI used to have neither half of it: `checkFirmware` was never called at all, so a unit
+    /// on the one blacklisted firmware was configured with no warning and its recording silently
+    /// truncated; and Clear had no equivalent of the toolbar's recording-with-data exclusion.
+    ///
+    /// - Parameter refuseRecordingWithData: Clear only, and only without `--force`.
+    @MainActor
+    func preflight(_ devices: [OmDevice], refuseRecordingWithData: Bool = false) throws {
+        let prompter = CLIPrompter(assumeYes: options.has("--yes") || options.has("--force"))
+        let refusal = DeviceFlowPreflight.run(
+            devices: devices,
+            blacklist: FirmwareBlacklist.load(),
+            prompt: prompter,
+            log: { FileHandle.standardError.write(Data(($0 + "\n").utf8)) },
+            refuseRecordingWithData: refuseRecordingWithData,
+            // No background poll here, so unlike the GUI the CLI *can* ask a device for a version
+            // it has not got (upstream's "Examining" pass) instead of asking the operator.
+            readVersion: { device in
+                device.refreshStatus()
+                return device.firmwareVersion
+            })
+
+        switch refusal {
+        case .none:
+            return
+        case .recordingWithData(let ids):
+            throw CLIError.failed(ClearGuard.refusalMessage(ids: ids)
+                + " Pass --force to erase them anyway.")
+        case .firmware:
+            throw CLIError.failed("Firmware check not passed -- pass --yes to go ahead anyway.")
+        case .downloading(let ids, let total):
+            throw CLIError.failed("Download in progress for \(ids.count) (of \(total) selected) "
+                + "device(s) (\(ids.joined(separator: ", "))) -- cannot continue until the download "
+                + "is complete or cancelled")
+        }
     }
 }

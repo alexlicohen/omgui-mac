@@ -1,6 +1,8 @@
 import Foundation
 import OmApi
+import OmGuiCore
 
+@MainActor
 enum Commands {
 
     // MARK: - status
@@ -145,11 +147,17 @@ enum Commands {
 
         let flash = options.has("--flash")
         let devices = try runner.selectedDevices()
+        for device in devices { device.update(force: true) }
+
+        // `CheckFirmware(devices)` — the blacklist the GUI has run before Record since C19 and the
+        // CLI did not run at all: `omgui-cli record --session N --all` over units on CWA17_42 (the
+        // one active entry) configured them silently and their recordings were truncated.
+        try runner.preflight(devices)
+
         var failures: [String] = []
 
         for device in devices {
             let label = FilenameTemplate.deviceIdString(device.deviceId)
-            device.update(force: true)
 
             var deviceConfig = config
             if !device.hasSyncGyro { deviceConfig.gyro = nil }   // OMGUI ignores gyro on an AX3
@@ -204,56 +212,36 @@ enum Commands {
             device.update(force: true)
             let label = FilenameTemplate.deviceIdString(device.deviceId)
 
-            if device.isDownloading { failures.append("\(label): already downloading"); continue }
-            if device.isRecording != .stopped { failures.append("\(label): device is recording"); continue }
-            if !device.hasData { failures.append("\(label): device has no data"); continue }
-
-            // Read the file header for the metadata placeholders and the identity cross-check.
-            var metadataMap: [String: String] = [:]
-            var fileDeviceId: UInt32?
-            var fileSessionId: String?
-            if let reader = try? OmReader(path: device.dataFilePath) {
-                metadataMap = MetadataTools.namedMap(reader.metadata)
-                fileDeviceId = reader.deviceId
-                fileSessionId = FilenameTemplate.sessionIdString(reader.sessionId)
-                metadataMap["DeviceId"] = FilenameTemplate.deviceIdString(reader.deviceId)
-                metadataMap["SessionId"] = fileSessionId
-                if let start = reader.startTime.date() { metadataMap["StartTime"] = format(start, "yyyy-MM-dd HH:mm:ss"); metadataMap["StartTimeNumeric"] = format(start, "yyyyMMddHHmmss") }
-                if let end = reader.endTime.date() { metadataMap["EndTime"] = format(end, "yyyy-MM-dd HH:mm:ss"); metadataMap["EndTimeNumeric"] = format(end, "yyyyMMddHHmmss") }
-                reader.close()
-            }
-
-            // OMGUI refuses to name the file when the device and the file disagree.
-            if !options.has("--force") {
-                if let fileDeviceId, fileDeviceId != device.deviceId {
-                    failures.append("\(label): device identifier not verified (file says \(FilenameTemplate.deviceIdString(fileDeviceId))) -- reconnect the device and try again")
+            // `DownloadFlow.resolve` — the same resolution the GUI's Download button runs: the
+            // three state guards, the unreadable-file case and *both* identity comparisons.
+            // Re-implementing them here kept two holes the shared version has closed: a device
+            // whose SESSION read had failed (`sessionId == .max`) was exempted from the session
+            // comparison and filed its data under the file's own session id, and a file that would
+            // not open at all skipped both comparisons because neither value could be read.
+            let paths: DownloadPlan
+            switch DownloadFlow.resolve(device: device, template: template, workspace: workspace) {
+            case .plan(let resolved):
+                paths = resolved
+            case .failure(let reason):
+                guard options.has("--force"), DownloadFlow.isIdentityFailure(reason) else {
+                    failures.append("\(label): \(reason)")
                     continue
                 }
-                let deviceSessionText = FilenameTemplate.sessionIdString(device.sessionId)
-                if device.sessionId != .max, let fileSessionId, fileSessionId != deviceSessionText {
-                    failures.append("\(label): session identifier not verified (file says \(fileSessionId), device says \(deviceSessionText)) -- reconnect the device and try again")
-                    continue
-                }
+                FileHandle.standardError.write(Data("WARNING \(label): \(reason) (--force)\n".utf8))
+                paths = DownloadFlow.plan(device: device, template: template, workspace: workspace)
             }
 
-            let baseName = FilenameTemplate.expand(template,
-                                                   deviceId: device.deviceId,
-                                                   sessionId: device.sessionId,
-                                                   fileSessionId: fileSessionId,
-                                                   metadata: metadataMap)
-            let paths = FilenameTemplate.downloadPaths(workspace: workspace, baseName: baseName)
-
-            if FileManager.default.fileExists(atPath: paths.final.path) && !options.has("--overwrite") {
-                failures.append("\(label): \(paths.final.lastPathComponent) already exists (pass --overwrite)")
+            if FileManager.default.fileExists(atPath: paths.finalPath.path) && !options.has("--overwrite") {
+                failures.append("\(label): \(paths.finalPath.lastPathComponent) already exists (pass --overwrite)")
                 continue
             }
-            try? FileManager.default.removeItem(at: paths.partial)
-            try? FileManager.default.removeItem(at: paths.final)
+            try? FileManager.default.removeItem(at: paths.partialPath)
+            try? FileManager.default.removeItem(at: paths.finalPath)
 
-            print("\(label): downloading \((try? device.dataFileSize()) ?? 0) bytes to \(paths.final.path)")
+            print("\(label): downloading \((try? device.dataFileSize()) ?? 0) bytes to \(paths.finalPath.path)")
             watcher.expect(device.deviceId)
             do {
-                try device.beginDownloading(to: paths.partial.path, renameTo: paths.final.path)
+                try device.beginDownloading(to: paths.partialPath.path, renameTo: paths.finalPath.path)
                 started.append(device)
             } catch {
                 failures.append("\(label): \(error)")
@@ -289,8 +277,9 @@ enum Commands {
     /// OMGUI's Clear. Default is a full NAND wipe; `--quick` is OMGUI's Shift-click quick format.
     ///
     /// Every guard OMGUI's Clear button has, in its order: no implicit "all devices", nothing
-    /// downloading (`EnsureNoSelectedDownloading`), and an explicit confirmation that defaults to
-    /// no. This erases participant data that is not recoverable, so the default has to be refusal.
+    /// downloading (`EnsureNoSelectedDownloading`), the toolbar's recording-with-data exclusion
+    /// (`ClearGuard`), `CheckFirmware`, and an explicit confirmation that defaults to no. This
+    /// erases participant data that is not recoverable, so the default has to be refusal.
     static func clear(_ runner: Runner) throws {
         let options = runner.options
         let quick = options.has("--quick")
@@ -302,12 +291,10 @@ enum Commands {
         let devices = try runner.selectedDevices()
         for device in devices { device.update(force: true) }
 
-        // `MainForm.EnsureNoSelectedDownloading`.
-        let downloading = devices.filter(\.isDownloading)
-        guard downloading.isEmpty else {
-            let ids = downloading.map { FilenameTemplate.deviceIdString($0.deviceId) }.joined(separator: ", ")
-            throw CLIError.failed("Download in progress for \(downloading.count) (of \(devices.count) selected) device(s) (\(ids)) -- cannot clear until the download is complete or cancelled")
-        }
+        // `EnsureNoSelectedDownloading`, then the exclusion `DeviceToolbarState.clear` makes —
+        // a device that is recording *and* already holds data is one the GUI's Clear button greys
+        // out, because `FORMAT WC` on it destroys a recording in progress. Then `CheckFirmware`.
+        try runner.preflight(devices, refuseRecordingWithData: !options.has("--force"))
 
         if !options.has("--yes") {
             let labels = devices.map { FilenameTemplate.deviceIdString($0.deviceId) }.joined(separator: ", ")
@@ -326,8 +313,21 @@ enum Commands {
             let label = FilenameTemplate.deviceIdString(device.deviceId)
             print("\(label): \(quick ? "quick format" : "wipe")…")
             if device.clear(wipe: !quick) {
-                device.update(force: true)
-                print("\(label): session \(device.sessionId), \(device.recordingDescription)")
+                // Read the device back rather than printing the state we asked it for.
+                // `update(force:)` alone bypasses only the poll interval — the session/time/delays
+                // block is gated on `validData`, already true from the pre-clear update — so a
+                // device that ACKed `FORMAT WC` without resetting its session id still printed
+                // "session 0". `refreshStatus()` drops `validData` first.
+                device.refreshStatus()
+                let metadata = (try? device.metadata()) ?? ""
+                var line = "\(label): session \(device.sessionId), \(device.recordingDescription)"
+                line += metadata.isEmpty ? ", metadata cleared"
+                                         : ", metadata NOT cleared (\(metadata.utf8.count) bytes)"
+                if let config = device.cachedAccelConfig {
+                    line += ", \(config.rate.displayString) Hz ±\(config.range.rawValue) g"
+                }
+                if device.hasData { line += ", STILL HOLDS DATA" }
+                print(line)
             } else {
                 failures.append(label)
             }

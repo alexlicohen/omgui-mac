@@ -68,6 +68,15 @@ public enum FlowMessages {
         "Device \(deviceId) has a recently restarted clock yet is already appearing fully charged,\nwhich is a strong indicator that the device's clock or battery could be damaged.\n\nPlease label this device and place it aside\nuntil you have run some tests to determine its condition."
     }
 
+    /// Not an upstream string: `BlockBackgroundTasks` spins on the poll for as long as it takes,
+    /// so upstream cannot reach this state at all. Here it means a poll is wedged on a device's
+    /// port, and the flow was not started.
+    public static func pollStillRunning(seconds: Int) -> String {
+        "A device poll was still running after \(seconds) seconds, so the operation was not started."
+            + "\n\nRunning it alongside a poll can leave a device configured but not recording."
+            + advice
+    }
+
     /// `"Failed operation on N device(s):\r\n" + string.Join("; ", ids) + ADVICE`.
     public static func failed(ids: [String]) -> String {
         "Failed operation on \(ids.count) device(s):\n" + ids.joined(separator: "; ") + advice
@@ -136,12 +145,7 @@ public enum DownloadFlow {
             ? (fileSessionIdString ?? "0000000000")
             : sessionIdString
 
-        let baseName = FilenameTemplate.expand(template,
-                                               deviceId: device.deviceId,
-                                               sessionId: device.sessionId,
-                                               fileSessionId: fileSessionIdString,
-                                               metadata: map)
-        let paths = FilenameTemplate.downloadPaths(workspace: workspace, baseName: baseName)
+        let resolved = plan(device: device, template: template, workspace: workspace, metadata: map)
 
         if usedDeviceId != fileDeviceIdString {
             return .failure(DownloadFlow.deviceIdError)
@@ -149,14 +153,40 @@ public enum DownloadFlow {
         if usedSessionId != sessionIdString || usedSessionId != fileSessionIdString {
             return .failure(DownloadFlow.sessionIdError)
         }
-        return .plan(DownloadPlan(deviceId: device.deviceId,
-                                  partialPath: paths.partial,
-                                  finalPath: paths.final))
+        return .plan(resolved)
+    }
+
+    /// The file name a download would be given, with none of the checks `resolve` makes.
+    ///
+    /// Only for the CLI's `--force`: a caller that has been told the name cannot be verified and
+    /// has said to write it anyway.
+    public static func plan(device: OmDevice,
+                            template: String,
+                            workspace: URL,
+                            metadata: [String: String]? = nil) -> DownloadPlan {
+        let map = metadata ?? FileMetadata(path: device.dataFilePath)?.map ?? [:]
+        let baseName = FilenameTemplate.expand(template,
+                                               deviceId: device.deviceId,
+                                               sessionId: device.sessionId,
+                                               fileSessionId: map["SessionId"],
+                                               metadata: map)
+        let paths = FilenameTemplate.downloadPaths(workspace: workspace, baseName: baseName)
+        return DownloadPlan(deviceId: device.deviceId,
+                            partialPath: paths.partial,
+                            finalPath: paths.final)
     }
 
     public static let deviceIdError = "Download filename (device identifier not verified)."
     public static let sessionIdError = "Download filename (session identifier not verified)."
     public static let unreadableFileError = "Device data file could not be read."
+
+    /// The failures that mean "this file name cannot be *verified*" rather than "this device must
+    /// not be downloaded" -- the only ones a `--force` may override.
+    public static let identityFailures = [deviceIdError, sessionIdError, unreadableFileError]
+
+    public static func isIdentityFailure(_ reason: String) -> Bool {
+        identityFailures.contains(reason)
+    }
 
     /// The whole button: resolve, prompt about overwrites, start each download, summarise.
     @discardableResult
@@ -669,6 +699,19 @@ public struct FirmwareBlacklist: Sendable, Equatable {
 
     public static let title = "Firmware Update Recommended"
 
+    /// Upstream's `"Problem examining N device(s) - firmware version not checked."` modal
+    /// (`MainForm.cs:1515`), as a question rather than a notification -- see `checkFirmware`.
+    public static let uncheckedTitle = "Firmware Version Not Checked"
+
+    public static func uncheckedMessage(ids: [String]) -> String {
+        "The firmware version has not been read yet for \(ids.count) device(s):\n\n    "
+            + ids.joined(separator: ", ")
+            + "\n\nUntil it has been they cannot be checked against the firmware blacklist, so a "
+            + "device on a version known to truncate recordings would not be flagged."
+            + "\n\nWait a few seconds and try again, or continue without checking them?"
+            + FlowMessages.advice
+    }
+
     /// The message body, following `MainForm.cs`'s wording as far as the port can honour it.
     public static func message(deviceId: UInt32, entry: Entry) -> String {
         var text = "Device \(deviceId) is running firmware version \(entry.version).\n\n\(entry.reason)\n\n"
@@ -686,21 +729,42 @@ public struct FirmwareBlacklist: Sendable, Equatable {
 /// `CheckFirmware(devices)` — returns true when the caller should stop, exactly as upstream's
 /// "Don't do anything else now (user can press button again)".
 ///
-/// Devices whose firmware version has not been read yet are skipped rather than re-polled: the
-/// poll thread owns device I/O (a blocking `ID` command from the main thread is what makes the
-/// property grid collide with a running flow), so an unknown version cannot be checked here.
+/// A device whose firmware version has not been polled yet is *not* silently skipped. Upstream
+/// force-polls those first (`MainForm.cs:1490-1520`: `device.Update(0, true)` inside a modal
+/// progress worker) and then puts up `"Problem examining N device(s) - firmware version not
+/// checked."` for whatever is still unknown. This port cannot make that read from the main actor —
+/// the poll thread owns device I/O, and a blocking `ID` here is exactly what made the property grid
+/// collide with a running flow — so the caller passes `readVersion` when it safely can (the CLI
+/// polls synchronously and has no background poll), and when the version is still unknown the
+/// operator is asked rather than told: skipping the check silently made the gate read as enforced
+/// while it was not, which is the one behaviour that is not defensible.
 @MainActor
 @discardableResult
 public func checkFirmware(_ devices: [OmDevice],
                           blacklist: FirmwareBlacklist,
                           prompt: any UserPrompting,
-                          log: ((String) -> Void)? = nil) -> Bool {
+                          log: ((String) -> Void)? = nil,
+                          readVersion: ((OmDevice) -> Int?)? = nil) -> Bool {
+    // Upstream's "Examining" pass, when the caller has a safe way to do it.
+    if let readVersion {
+        for device in devices where device.firmwareVersion == nil { _ = readVersion(device) }
+    }
+
+    let unchecked = devices.filter { $0.firmwareVersion == nil }
+    if !unchecked.isEmpty {
+        for device in unchecked {
+            log?("FIRMWARE: device \(device.deviceId) firmware version unknown (not checked).")
+        }
+        let ids = unchecked.map { FilenameTemplate.deviceIdString($0.deviceId) }
+        if !prompt.confirm(title: FirmwareBlacklist.uncheckedTitle,
+                           message: FirmwareBlacklist.uncheckedMessage(ids: ids)) {
+            return true
+        }
+    }
+
     for device in devices {
         guard let entry = blacklist.entry(serialId: device.serialId,
                                           firmwareVersion: device.firmwareVersion) else {
-            if device.firmwareVersion == nil {
-                log?("FIRMWARE: device \(device.deviceId) firmware version unknown (not checked).")
-            }
             continue
         }
         log?("FIRMWARE: device \(device.deviceId) is running \(entry.version)"
